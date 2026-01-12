@@ -1,0 +1,29 @@
+[package]
+name = "obcore"
+version = "0.1.0"
+edition = "2024"
+authors = ["itsstevenwal"]
+description = "A single threaded, zero dependency price-time priority limit orderbook implementation in Rust."
+license = "Apache-2.0 OR MIT"
+readme = "README.md"
+keywords = ["order", "hft", "ob", "limit", "orderbook"]
+repository = "https://github.com/itsstevenwal/obcore"
+
+[dependencies]
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "bench"
+harness = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = 3
+
+[profile.bench]
+inherits = "release"
