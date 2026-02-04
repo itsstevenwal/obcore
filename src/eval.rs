@@ -56,14 +56,14 @@ impl<O: OrderInterface> Evaluator<O> {
     /// Returns matches and instructions that can later be applied.
     #[inline]
     pub fn eval(&mut self, ob: &OrderBook<O>, ops: Vec<Op<O>>) -> Vec<Instruction<O>> {
-        let mut instructions = Vec::with_capacity(ops.len() * 10);
+        let mut instructions = Vec::new();
         for op in ops {
             match op {
                 Op::Insert(order) => {
-                    self.eval_insert(ob, order, &mut instructions);
+                    self.eval_insert_inner(ob, order, &mut instructions);
                 }
                 Op::Delete(order_id) => {
-                    self.eval_cancel(ob, order_id, &mut instructions);
+                    self.eval_cancel_inner(ob, order_id, &mut instructions);
                 }
             }
         }
@@ -71,8 +71,25 @@ impl<O: OrderInterface> Evaluator<O> {
         instructions
     }
 
+    /// Evaluates a single insert operation. Only available with the `bench` feature.
+    #[cfg(feature = "bench")]
     #[inline(always)]
-    fn eval_insert(&mut self, ob: &OrderBook<O>, order: O, instructions: &mut Vec<Instruction<O>>) {
+    pub fn eval_insert(
+        &mut self,
+        ob: &OrderBook<O>,
+        order: O,
+        instructions: &mut Vec<Instruction<O>>,
+    ) {
+        self.eval_insert_inner(ob, order, instructions);
+    }
+
+    #[inline(always)]
+    fn eval_insert_inner(
+        &mut self,
+        ob: &OrderBook<O>,
+        order: O,
+        instructions: &mut Vec<Instruction<O>>,
+    ) {
         if ob.orders.contains_key(order.id()) {
             instructions.push(Instruction::NoOp(
                 order.id().clone(),
@@ -134,8 +151,20 @@ impl<O: OrderInterface> Evaluator<O> {
         }
     }
 
+    /// Evaluates a single cancel operation. Only available with the `bench` feature.
+    #[cfg(feature = "bench")]
     #[inline(always)]
-    fn eval_cancel(
+    pub fn eval_cancel(
+        &mut self,
+        ob: &OrderBook<O>,
+        order_id: O::T,
+        instructions: &mut Vec<Instruction<O>>,
+    ) {
+        self.eval_cancel_inner(ob, order_id, instructions);
+    }
+
+    #[inline(always)]
+    fn eval_cancel_inner(
         &mut self,
         ob: &OrderBook<O>,
         order_id: O::T,

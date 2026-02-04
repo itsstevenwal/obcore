@@ -9,6 +9,9 @@ readme = "README.md"
 keywords = ["order", "hft", "ob", "limit", "orderbook"]
 repository = "https://github.com/itsstevenwal/obcore"
 
+[features]
+bench = []
+
 [dependencies]
 
 [dev-dependencies]
@@ -17,6 +20,7 @@ criterion = "0.8.1"
 [[bench]]
 name = "bench"
 harness = false
+required-features = ["bench"]
 
 [profile.release]
 lto = "fat"

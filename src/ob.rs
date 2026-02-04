@@ -111,17 +111,38 @@ impl<O: OrderInterface> OrderBook<O> {
         }
     }
 
+    /// Applies a single insert instruction. Only available with the `bench` feature.
+    #[cfg(feature = "bench")]
+    #[inline(always)]
+    pub fn apply_insert(&mut self, order: O, remaining: O::N) -> Output<O> {
+        self.apply_insert_inner(order, remaining)
+    }
+
+    /// Applies a single delete instruction. Only available with the `bench` feature.
+    #[cfg(feature = "bench")]
+    #[inline(always)]
+    pub fn apply_delete(&mut self, order_id: O::T) -> Output<O> {
+        self.apply_delete_inner(order_id)
+    }
+
+    /// Applies a single fill instruction. Only available with the `bench` feature.
+    #[cfg(feature = "bench")]
+    #[inline(always)]
+    pub fn apply_fill(&mut self, order_id: O::T, quantity: O::N) -> Output<O> {
+        self.apply_fill_inner(order_id, quantity)
+    }
+
     /// Applies instructions to the orderbook, mutating state.
     #[inline]
     pub fn apply(&mut self, instructions: Vec<Instruction<O>>) -> Vec<Output<O>> {
         let mut outputs = Vec::new();
         for instruction in instructions {
             let output = match instruction {
-                Instruction::Insert(order, remaining) => self.apply_insert(order, remaining),
-                Instruction::Delete(order_id) => self.apply_delete(order_id),
+                Instruction::Insert(order, remaining) => self.apply_insert_inner(order, remaining),
+                Instruction::Delete(order_id) => self.apply_delete_inner(order_id),
                 Instruction::Fill(order_id, quantity, role) => {
                     if role == Role::Maker {
-                        self.apply_fill(order_id, quantity)
+                        self.apply_fill_inner(order_id, quantity)
                     } else {
                         Output(order_id.clone(), O::N::default())
                     }
@@ -136,7 +157,7 @@ impl<O: OrderInterface> OrderBook<O> {
     }
 
     #[inline(always)]
-    fn apply_insert(&mut self, mut order: O, remaining: O::N) -> Output<O> {
+    fn apply_insert_inner(&mut self, mut order: O, remaining: O::N) -> Output<O> {
         let filled = order.quantity() - remaining;
         if filled > O::N::default() {
             order.fill(filled);
@@ -150,7 +171,7 @@ impl<O: OrderInterface> OrderBook<O> {
     }
 
     #[inline(always)]
-    fn apply_delete(&mut self, order_id: O::T) -> Output<O> {
+    fn apply_delete_inner(&mut self, order_id: O::T) -> Output<O> {
         if let Some(&node_ptr) = self.orders.get(&order_id) {
             let is_buy = unsafe { (*node_ptr).data.is_buy() };
             self.side_mut(is_buy).remove_order(node_ptr);
@@ -161,7 +182,7 @@ impl<O: OrderInterface> OrderBook<O> {
     }
 
     #[inline(always)]
-    fn apply_fill(&mut self, order_id: O::T, quantity: O::N) -> Output<O> {
+    fn apply_fill_inner(&mut self, order_id: O::T, quantity: O::N) -> Output<O> {
         let &node_ptr = self.orders.get(&order_id).unwrap();
         let is_buy = unsafe { (*node_ptr).data.is_buy() };
         let removed = self.side_mut(is_buy).fill_order(node_ptr, quantity);
