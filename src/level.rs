@@ -62,7 +62,7 @@ impl<O: OrderInterface> Level<O> {
 
     #[inline(always)]
     pub fn remove_order(&mut self, node_ptr: *mut Node<O>) {
-        if let Some(ref order) = self.orders.remove(node_ptr) {
+        if let Some(order) = self.orders.remove(node_ptr) {
             self.total_quantity -= order.remaining();
         }
     }
