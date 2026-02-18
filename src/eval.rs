@@ -88,6 +88,9 @@ impl<O: OrderInterface> Evaluator<O> {
         let post_only = order.post_only();
         let stp = order.stp();
         let taker_owner = order.owner();
+        let is_buy = order.is_buy();
+        let price = order.price();
+        let opposite_side = if is_buy { &ob.asks } else { &ob.bids };
 
         let mut remaining_quantity = order.remaining();
         let mut maker_matches = Vec::new();
@@ -95,18 +98,8 @@ impl<O: OrderInterface> Evaluator<O> {
         let mut cancel_both_makers = Vec::new();
         let mut cancel_both_triggered = false;
 
-        let is_buy = order.is_buy();
-        let price = order.price();
-
-        let opposite_side = if is_buy { &ob.asks } else { &ob.bids };
-
-        // Compute matches without updating temp yet (so we can reject post_only / FOK without side effects)
         'outer: for level in opposite_side.iter() {
-            let dominated = if is_buy {
-                price < level.price()
-            } else {
-                price > level.price()
-            };
+            let dominated = is_buy && price < level.price() || !is_buy && price > level.price();
             if dominated {
                 break;
             }
@@ -114,70 +107,61 @@ impl<O: OrderInterface> Evaluator<O> {
                 if remaining_quantity == O::N::default() {
                     break 'outer;
                 }
-                let remaining = *self
+                let maker_remaining = *self
                     .temp
                     .get(resting_order.id())
                     .unwrap_or(&resting_order.remaining());
-
-                if remaining == O::N::default() {
+                if maker_remaining == O::N::default() {
                     continue;
                 }
-                let taken_quantity = remaining_quantity.min(remaining);
+                let taken_quantity = remaining_quantity.min(maker_remaining);
                 let same_owner = taker_owner == resting_order.owner();
 
                 if post_only && taken_quantity > O::N::default() {
                     return Instruction::Delete(vec![(order.id().clone(), Msg::PostOnlyWouldTake)]);
                 }
 
-                match stp {
-                    STP::None => {
-                        remaining_quantity -= taken_quantity;
-                        maker_matches.push((resting_order.id().clone(), taken_quantity));
-                    }
-                    STP::CancelTaker => {
-                        if same_owner && taken_quantity > O::N::default() {
-                            return Instruction::Delete(vec![(order.id().clone(), Msg::StpCancelTaker)]);
-                        }
-                        remaining_quantity -= taken_quantity;
-                        maker_matches.push((resting_order.id().clone(), taken_quantity));
-                    }
-                    STP::CancelMaker => {
-                        if same_owner {
+                // Same-owner: STP may reject taker, cancel maker(s), or skip fill
+                let take_from_maker = !same_owner || matches!(stp, STP::None | STP::CancelTaker);
+                if !take_from_maker {
+                    if same_owner {
+                        if stp == STP::CancelMaker {
                             cancel_maker_ids.push(resting_order.id().clone());
                             self.temp
                                 .insert(resting_order.id().clone(), O::N::default());
-                        } else {
-                            remaining_quantity -= taken_quantity;
-                            maker_matches.push((resting_order.id().clone(), taken_quantity));
-                        }
-                    }
-                    STP::CancelBoth => {
-                        if same_owner && taken_quantity > O::N::default() {
+                        } else if stp == STP::CancelBoth && taken_quantity > O::N::default() {
                             cancel_both_triggered = true;
                             cancel_both_makers.push(resting_order.id().clone());
                             self.temp
                                 .insert(resting_order.id().clone(), O::N::default());
-                        } else if !cancel_both_triggered {
-                            remaining_quantity -= taken_quantity;
-                            maker_matches.push((resting_order.id().clone(), taken_quantity));
                         }
                     }
+                    continue;
                 }
+                if stp == STP::CancelTaker && same_owner && taken_quantity > O::N::default() {
+                    return Instruction::Delete(vec![(order.id().clone(), Msg::StpCancelTaker)]);
+                }
+                if stp == STP::CancelBoth && cancel_both_triggered {
+                    continue;
+                }
+                remaining_quantity -= taken_quantity;
+                maker_matches.push((resting_order.id().clone(), taken_quantity));
             }
         }
 
-        // STP CancelBoth: reject taker and cancel same-owner makers that would have been hit
         if !cancel_both_makers.is_empty() {
             let mut pairs = vec![(order.id().clone(), Msg::StpCancelTaker)];
-            pairs.extend(cancel_both_makers.into_iter().map(|id| (id, Msg::Cancelled)));
+            pairs.extend(
+                cancel_both_makers
+                    .into_iter()
+                    .map(|id| (id, Msg::Cancelled)),
+            );
             return Instruction::Delete(pairs);
         }
-
         if tif == TIF::FOK && remaining_quantity > O::N::default() {
             return Instruction::Delete(vec![(order.id().clone(), Msg::FOKNotFilled)]);
         }
 
-        // Apply maker quantity updates for subsequent ops in the batch
         for (maker_id, taken_quantity) in &maker_matches {
             let remaining = self.temp.get(maker_id).copied().unwrap_or_else(|| {
                 ob.order(maker_id)
@@ -188,20 +172,18 @@ impl<O: OrderInterface> Evaluator<O> {
                 .insert(maker_id.clone(), remaining - *taken_quantity);
         }
 
-        if !maker_matches.is_empty() || !cancel_maker_ids.is_empty() {
-            // IOC: set remaining to 0 so apply does not insert the unfilled portion
-            let remaining = if tif == TIF::IOC {
-                O::N::default()
-            } else {
-                remaining_quantity
-            };
+        let has_match_or_cancel = !maker_matches.is_empty() || !cancel_maker_ids.is_empty();
+        let remaining = if tif == TIF::IOC {
+            O::N::default()
+        } else {
+            remaining_quantity
+        };
+        if has_match_or_cancel {
             return Instruction::Match(order, remaining, maker_matches, cancel_maker_ids);
         }
-
         if tif == TIF::IOC {
             return Instruction::Delete(vec![(order.id().clone(), Msg::IOCNoFill)]);
         }
-
         Instruction::Insert(order, remaining_quantity)
     }
 
