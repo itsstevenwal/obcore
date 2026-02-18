@@ -13,19 +13,19 @@ The orderbook separates state evaluation from state mutation:
 
 Run with: `cargo bench --features bench`
 
-| Operation | Benchmark   | Eval   | Apply  | Total*   |
-|-----------|-------------|--------|--------|----------|
-| Insert    | Empty book  | 10.6 ns | 43.4 ns | 54 ns (19 M/s)  |
-| Insert    | Depth 100   | 17.1 ns | 30.6 ns | 48 ns (21 M/s)  |
-| Insert    | Depth 1000  | 36.7 ns | 46.9 ns | 84 ns (12 M/s)  |
-| Cancel    | Single      | 4.8 ns  | 26.4 ns | 31 ns (32 M/s)  |
-| Cancel    | Depth 100   | 9.0 ns  | 48.3 ns | 57 ns (18 M/s)  |
-| Cancel    | Depth 1000  | 24.5 ns | 44.6 ns | 69 ns (14 M/s)  |
-| Match     | 1 level     | 39.7 ns | 50.8 ns | 90 ns (11 M/s)  |
-| Match     | 5 levels    | 102 ns  | 354 ns  | 456 ns (2.2 M/s) |
-| Match     | 10 levels   | 189 ns  | 740 ns  | 929 ns (1.1 M/s) |
+| Operation | Benchmark   | Eval   | Apply  | Total   |
+|-----------|-------------|--------|--------|---------|
+| Insert    | Empty book  | 10.8 ns | 56.3 ns | 67 ns (15 M/s)  |
+| Insert    | Depth 100   | 16.5 ns | 35.2 ns | 52 ns (19 M/s)  |
+| Insert    | Depth 1000  | 32.4 ns | 48.0 ns | 80 ns (13 M/s)  |
+| Cancel    | Single      | 4.9 ns  | 27.2 ns | 32 ns (31 M/s)  |
+| Cancel    | Depth 100   | 9.0 ns  | 48.9 ns | 58 ns (17 M/s)  |
+| Cancel    | Depth 1000  | 24.6 ns | 54.0 ns | 79 ns (13 M/s)  |
+| Match     | 1 level     | 39.3 ns | 83.3 ns | 123 ns (8.1 M/s)  |
+| Match     | 5 levels    | 103 ns  | 177 ns  | 280 ns (3.6 M/s) |
+| Match     | 10 levels   | 189 ns  | 318 ns  | 507 ns (2.0 M/s) |
 
-*Total = Eval + Apply. Throughput in millions of ops/sec. Match apply is per fill.*
+*Total = Eval + Apply. Throughput in millions of ops/sec.*
 
 ## usage
 

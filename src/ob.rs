@@ -1,3 +1,5 @@
+#[cfg(feature = "bench")]
+use crate::eval::Msg;
 use crate::eval::{Instruction, InstructionPrimitive};
 use crate::{hash::FxHashMap, list::Node, order::OrderInterface, side::Side};
 
@@ -118,45 +120,34 @@ impl<O: OrderInterface> OrderBook<O> {
     // Internal helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    #[inline(always)]
-    fn side_mut(&mut self, is_buy: bool) -> &mut Side<O> {
-        if is_buy {
-            &mut self.bids
-        } else {
-            &mut self.asks
-        }
-    }
-
     /// Applies a single insert instruction. Only available with the `bench` feature.
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn apply_insert(&mut self, order: O, remaining: O::N) -> Output<O> {
-        Output::Single(self.apply_insert_inner(order, remaining))
+        Output::Single(self.apply_single(InstructionPrimitive::Insert(order, remaining)))
     }
 
     /// Applies a single delete instruction. Only available with the `bench` feature.
     #[cfg(feature = "bench")]
     #[inline(always)]
     pub fn apply_delete(&mut self, order_id: O::T) -> Output<O> {
-        Output::Single(self.apply_delete_inner(order_id))
+        Output::Single(
+            self.apply_single(InstructionPrimitive::Delete(order_id, Msg::UserCancelled)),
+        )
     }
 
     /// Applies instructions to the orderbook, mutating state.
     /// Returns one `Output` per instruction.
     #[inline]
     pub fn apply(&mut self, instructions: Vec<Instruction<O>>) -> Vec<Output<O>> {
-        let mut outputs = Vec::new();
+        let mut outputs = Vec::with_capacity(instructions.len());
         for instruction in instructions {
             match instruction {
                 Instruction::Single(p) => {
-                    outputs.push(Output::Single(self.apply_primitive(p)));
+                    outputs.push(Output::Single(self.apply_single(p)));
                 }
                 Instruction::Multi(primitives) => {
-                    let out_prims: Vec<_> = primitives
-                        .into_iter()
-                        .map(|p| self.apply_primitive(p))
-                        .collect();
-                    outputs.push(Output::Multi(out_prims));
+                    outputs.push(Output::Multi(self.apply_multi(primitives)));
                 }
             }
         }
@@ -164,52 +155,64 @@ impl<O: OrderInterface> OrderBook<O> {
     }
 
     #[inline(always)]
-    fn apply_primitive(&mut self, p: InstructionPrimitive<O>) -> OutputPrimitive<O> {
+    fn apply_single(&mut self, p: InstructionPrimitive<O>) -> OutputPrimitive<O> {
+        let Self { bids, asks, orders } = self;
+        Self::apply_primitive(bids, asks, orders, p)
+    }
+
+    #[inline(always)]
+    fn apply_multi(&mut self, primitives: Vec<InstructionPrimitive<O>>) -> Vec<OutputPrimitive<O>> {
+        let Self { bids, asks, orders } = self;
+        let mut out = Vec::with_capacity(primitives.len());
+        for p in primitives {
+            out.push(Self::apply_primitive(bids, asks, orders, p));
+        }
+        out
+    }
+
+    #[inline(always)]
+    fn apply_primitive(
+        bids: &mut Side<O>,
+        asks: &mut Side<O>,
+        orders: &mut FxHashMap<O::T, *mut Node<O>>,
+        p: InstructionPrimitive<O>,
+    ) -> OutputPrimitive<O> {
         match p {
-            InstructionPrimitive::Insert(order, remaining) => {
-                self.apply_insert_inner(order, remaining)
-            }
-            InstructionPrimitive::Delete(id, _msg) => self.apply_delete_inner(id),
             InstructionPrimitive::Fill(order_id, quantity) => {
-                self.apply_fill_inner(order_id, quantity)
+                let &node_ptr = orders.get(&order_id).unwrap();
+                let is_buy = unsafe { (*node_ptr).data.is_buy() };
+                let side = if is_buy { bids } else { asks };
+                let removed = side.fill_order(node_ptr, quantity);
+                if removed {
+                    orders.remove(&order_id);
+                    OutputPrimitive::Filled
+                } else {
+                    OutputPrimitive::Partial
+                }
             }
-        }
-    }
-
-    fn apply_insert_inner(&mut self, mut order: O, remaining: O::N) -> OutputPrimitive<O> {
-        let filled = order.quantity() - remaining;
-        if filled > O::N::default() {
-            order.fill(filled);
-        }
-        let id = order.id().clone();
-        let is_buy = order.is_buy();
-        let node_ptr = self.side_mut(is_buy).insert_order(order);
-        self.orders.insert(id.clone(), node_ptr);
-
-        OutputPrimitive::Inserted(remaining)
-    }
-
-    #[inline(always)]
-    fn apply_delete_inner(&mut self, order_id: O::T) -> OutputPrimitive<O> {
-        if let Some(&node_ptr) = self.orders.get(&order_id) {
-            let is_buy = unsafe { (*node_ptr).data.is_buy() };
-            self.side_mut(is_buy).remove_order(node_ptr);
-            self.orders.remove(&order_id);
-        }
-
-        OutputPrimitive::Deleted
-    }
-
-    #[inline(always)]
-    fn apply_fill_inner(&mut self, order_id: O::T, quantity: O::N) -> OutputPrimitive<O> {
-        let &node_ptr = self.orders.get(&order_id).unwrap();
-        let is_buy = unsafe { (*node_ptr).data.is_buy() };
-        let removed = self.side_mut(is_buy).fill_order(node_ptr, quantity);
-        if removed {
-            self.orders.remove(&order_id);
-            OutputPrimitive::Filled
-        } else {
-            OutputPrimitive::Partial
+            InstructionPrimitive::Insert(mut order, remaining) => {
+                if remaining > O::N::default() {
+                    let filled = order.quantity() - remaining;
+                    if filled > O::N::default() {
+                        order.fill(filled);
+                    }
+                    let id = order.id().clone();
+                    let is_buy = order.is_buy();
+                    let side = if is_buy { bids } else { asks };
+                    let node_ptr = side.insert_order(order);
+                    orders.insert(id, node_ptr);
+                }
+                OutputPrimitive::Inserted(remaining)
+            }
+            InstructionPrimitive::Delete(order_id, _msg) => {
+                if let Some(&node_ptr) = orders.get(&order_id) {
+                    let is_buy = unsafe { (*node_ptr).data.is_buy() };
+                    let side = if is_buy { bids } else { asks };
+                    side.remove_order(node_ptr);
+                    orders.remove(&order_id);
+                }
+                OutputPrimitive::Deleted
+            }
         }
     }
 }
@@ -222,7 +225,8 @@ mod tests {
 
     fn setup_order(ob: &mut OrderBook<TestOrder>, id: &str, is_buy: bool, price: u64, qty: u64) {
         let order = TestOrder::new(id, is_buy, price, qty);
-        let node_ptr = ob.side_mut(is_buy).insert_order(order);
+        let side = if is_buy { &mut ob.bids } else { &mut ob.asks };
+        let node_ptr = side.insert_order(order);
         ob.orders.insert(String::from(id), node_ptr);
     }
 
@@ -235,7 +239,8 @@ mod tests {
         owner: &str,
     ) {
         let order = TestOrder::new(id, is_buy, price, qty).with_owner(owner);
-        let node_ptr = ob.side_mut(is_buy).insert_order(order);
+        let side = if is_buy { &mut ob.bids } else { &mut ob.asks };
+        let node_ptr = side.insert_order(order);
         ob.orders.insert(String::from(id), node_ptr);
     }
 

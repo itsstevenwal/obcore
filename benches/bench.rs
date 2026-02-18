@@ -360,7 +360,8 @@ fn bench_eval_match(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark apply matching across varying number of price levels
+/// Benchmark apply matching across varying number of makers.
+/// Uses Instruction::Multi with fills + optional taker insert, matching what eval produces.
 fn bench_apply_match(c: &mut Criterion) {
     let mut group = c.benchmark_group("apply_match");
     group.throughput(Throughput::Elements(1));
@@ -371,15 +372,14 @@ fn bench_apply_match(c: &mut Criterion) {
                 let mut ob = OrderBook::<BenchOrder>::default();
                 let mut eval = Evaluator::default();
                 let sell = BenchOrder::new(0, false, 1000, 100);
-                let instructions = eval.eval(&ob, vec![Op::Insert(sell)]);
-                ob.apply(instructions);
-                // Fill: maker order 0 for 100
-                (ob, 0u64, 100u64)
+                let instrs = eval.eval(&ob, vec![Op::Insert(sell)]);
+                ob.apply(instrs);
+                ob
             },
-            |(ob, order_id, quantity)| {
-                black_box(ob.apply(vec![Instruction::Single(
-                    InstructionPrimitive::Fill(black_box(*order_id), black_box(*quantity)),
-                )]))
+            |ob| {
+                black_box(ob.apply(vec![Instruction::Multi(vec![
+                    InstructionPrimitive::Fill(0, 100),
+                ])]))
             },
             BatchSize::LargeInput,
         );
@@ -392,19 +392,16 @@ fn bench_apply_match(c: &mut Criterion) {
                 let mut eval = Evaluator::default();
                 for i in 0..5u64 {
                     let sell = BenchOrder::new(i, false, 1000 + i, 10);
-                    let instructions = eval.eval(&ob, vec![Op::Insert(sell)]);
-                    ob.apply(instructions);
+                    let instrs = eval.eval(&ob, vec![Op::Insert(sell)]);
+                    ob.apply(instrs);
                 }
-                // Matches for orders 0-4, each for 10
-                let matches: Vec<(u64, u64)> = (0..5).map(|i| (i, 10)).collect();
-                (ob, matches)
+                ob
             },
-            |(ob, matches)| {
-                for (order_id, quantity) in matches.iter() {
-                    black_box(ob.apply(vec![Instruction::Single(
-                        InstructionPrimitive::Fill(black_box(*order_id), black_box(*quantity)),
-                    )]));
-                }
+            |ob| {
+                let fills: Vec<_> = (0..5)
+                    .map(|i| InstructionPrimitive::Fill(i, 10))
+                    .collect();
+                black_box(ob.apply(vec![Instruction::Multi(fills)]))
             },
             BatchSize::LargeInput,
         );
@@ -417,19 +414,16 @@ fn bench_apply_match(c: &mut Criterion) {
                 let mut eval = Evaluator::default();
                 for i in 0..10u64 {
                     let sell = BenchOrder::new(i, false, 1000 + i, 10);
-                    let instructions = eval.eval(&ob, vec![Op::Insert(sell)]);
-                    ob.apply(instructions);
+                    let instrs = eval.eval(&ob, vec![Op::Insert(sell)]);
+                    ob.apply(instrs);
                 }
-                // Matches for orders 0-9, each for 10
-                let matches: Vec<(u64, u64)> = (0..10).map(|i| (i, 10)).collect();
-                (ob, matches)
+                ob
             },
-            |(ob, matches)| {
-                for (order_id, quantity) in matches.iter() {
-                    black_box(ob.apply(vec![Instruction::Single(
-                        InstructionPrimitive::Fill(black_box(*order_id), black_box(*quantity)),
-                    )]));
-                }
+            |ob| {
+                let fills: Vec<_> = (0..10)
+                    .map(|i| InstructionPrimitive::Fill(i, 10))
+                    .collect();
+                black_box(ob.apply(vec![Instruction::Multi(fills)]))
             },
             BatchSize::LargeInput,
         );
