@@ -13,26 +13,26 @@ The orderbook separates state evaluation from state mutation:
 
 Run with: `cargo bench --features bench`
 
-| Operation | Benchmark | Eval | Apply | Total* |
-|-----------|-----------|------|-------|--------|
-| Insert | Empty book | 7.8 ns | 60.3 ns | 68 ns (15 M/s) |
-| Insert | Depth 100 | 17.1 ns | 37.4 ns | 55 ns (18 M/s) |
-| Insert | Depth 1000 | 37.2 ns | 63.1 ns | 100 ns (10 M/s) |
-| Cancel | Single | 6.2 ns | 30.6 ns | 37 ns (27 M/s) |
-| Cancel | Depth 100 | 11.1 ns | 42.9 ns | 54 ns (19 M/s) |
-| Cancel | Depth 1000 | 31.3 ns | 71.0 ns | 102 ns (9.8 M/s) |
-| Match | 1 level | 31.6 ns | 64.4 ns | 96 ns (10 M/s) |
-| Match | 5 levels | 106 ns | 375 ns | 481 ns (2.1 M/s) |
-| Match | 10 levels | 183 ns | 765 ns | 948 ns (1.1 M/s) |
+| Operation | Benchmark   | Eval   | Apply  | Total*   |
+|-----------|-------------|--------|--------|----------|
+| Insert    | Empty book  | 10.8 ns | 60.9 ns | 72 ns (14 M/s)  |
+| Insert    | Depth 100   | 15.6 ns | 43.7 ns | 59 ns (17 M/s)  |
+| Insert    | Depth 1000  | 37.6 ns | 73.0 ns | 111 ns (9 M/s)  |
+| Cancel    | Single      | 5.4 ns  | 41.1 ns | 46 ns (22 M/s)  |
+| Cancel    | Depth 100   | 9.2 ns  | 48.5 ns | 58 ns (17 M/s)  |
+| Cancel    | Depth 1000  | 23.1 ns | 80.6 ns | 104 ns (9.6 M/s) |
+| Match     | 1 level     | 24.4 ns | 64.4 ns | 89 ns (11 M/s)   |
+| Match     | 5 levels    | 96.1 ns | 375 ns  | 471 ns (2.1 M/s) |
+| Match     | 10 levels   | 183 ns  | 765 ns  | 948 ns (1.1 M/s) |
 
-*Total = Eval + Apply. Throughput in millions of ops/sec.*
+*Total = Eval + Apply. Throughput in millions of ops/sec. Match apply is per fill.*
 
 ## usage
 
 Implement the `OrderInterface` trait for your order type:
 
 ```rust
-use obcore::{OrderInterface, OrderBook, Op};
+use obcore::{Evaluator, OrderInterface, OrderBook, Op};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MyOrder {
@@ -44,8 +44,9 @@ struct MyOrder {
 }
 
 impl OrderInterface for MyOrder {
-    type T = u64;  // Order ID type
-    type N = u64;  // Quantity type
+    type T = u64;   // Order ID type
+    type N = u64;   // Quantity type
+    type Owner = u64;  // For self-trade prevention
 
     fn id(&self) -> &u64 { &self.id }
     fn price(&self) -> u64 { self.price }
@@ -53,15 +54,16 @@ impl OrderInterface for MyOrder {
     fn quantity(&self) -> u64 { self.quantity }
     fn remaining(&self) -> u64 { self.remaining }
     fn fill(&mut self, quantity: u64) { self.remaining -= quantity; }
+    fn owner(&self) -> &u64 { &self.id }
 }
 
-// Create orderbook and process orders
 let mut ob = OrderBook::<MyOrder>::default();
+let mut eval = Evaluator::default();
 
-// Evaluate result on insertion
-let (matches, instructions) = ob.eval(vec![Op::Insert(order)]);
+// Evaluate without mutating the book
+let instructions = eval.eval(&ob, vec![Op::Insert(order)]);
 
-// Apply state changes
+// Apply instructions to commit state changes
 ob.apply(instructions);
 ```
 

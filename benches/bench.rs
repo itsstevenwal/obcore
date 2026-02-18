@@ -1,5 +1,5 @@
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use obcore::{Evaluator, Instruction, Op, OrderBook, OrderInterface};
+use obcore::{Evaluator, Op, OrderBook, OrderInterface};
 use std::hint::black_box;
 
 /// Order type for benchmarks

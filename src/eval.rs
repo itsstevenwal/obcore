@@ -31,8 +31,8 @@ pub enum Msg {
 pub enum Instruction<O: OrderInterface> {
     // (Order, Remaining Quantity)
     Insert(O, O::N),
-    /// (Order ID, reason) pairs to cancel or reject; apply removes from book when present, always outputs (id, 0).
-    Delete(Vec<(O::T, Msg)>),
+    /// Cancel/reject one or two orders. (id, reason), optional second. Apply outputs (id, 0) for each.
+    Delete((O::T, Msg), Option<(O::T, Msg)>),
     /// (Taker order, remaining, maker matches, makers to cancel). Apply inserts the order when remaining > 0.
     Match(O, O::N, Vec<(O::T, O::N)>, Vec<O::T>),
 }
@@ -81,7 +81,7 @@ impl<O: OrderInterface> Evaluator<O> {
     #[inline(always)]
     fn eval_insert_inner(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
         if ob.orders.contains_key(order.id()) {
-            return Instruction::Delete(vec![(order.id().clone(), Msg::OrderAlreadyExists)]);
+            return Instruction::Delete((order.id().clone(), Msg::OrderAlreadyExists), None);
         }
 
         let tif = order.tif();
@@ -95,8 +95,6 @@ impl<O: OrderInterface> Evaluator<O> {
         let mut remaining_quantity = order.remaining();
         let mut maker_matches = Vec::new();
         let mut cancel_maker_ids = Vec::new();
-        let mut cancel_both_makers = Vec::new();
-        let mut cancel_both_triggered = false;
 
         'outer: for level in opposite_side.iter() {
             let dominated = is_buy && price < level.price() || !is_buy && price > level.price();
@@ -118,7 +116,7 @@ impl<O: OrderInterface> Evaluator<O> {
                 let same_owner = taker_owner == resting_order.owner();
 
                 if post_only && taken_quantity > O::N::default() {
-                    return Instruction::Delete(vec![(order.id().clone(), Msg::PostOnlyWouldTake)]);
+                    return Instruction::Delete((order.id().clone(), Msg::PostOnlyWouldTake), None);
                 }
 
                 // Same-owner: STP may reject taker, cancel maker(s), or skip fill
@@ -130,36 +128,26 @@ impl<O: OrderInterface> Evaluator<O> {
                             self.temp
                                 .insert(resting_order.id().clone(), O::N::default());
                         } else if stp == STP::CancelBoth && taken_quantity > O::N::default() {
-                            cancel_both_triggered = true;
-                            cancel_both_makers.push(resting_order.id().clone());
                             self.temp
                                 .insert(resting_order.id().clone(), O::N::default());
+                            return Instruction::Delete(
+                                (order.id().clone(), Msg::StpCancelTaker),
+                                Some((resting_order.id().clone(), Msg::Cancelled)),
+                            );
                         }
                     }
                     continue;
                 }
                 if stp == STP::CancelTaker && same_owner && taken_quantity > O::N::default() {
-                    return Instruction::Delete(vec![(order.id().clone(), Msg::StpCancelTaker)]);
-                }
-                if stp == STP::CancelBoth && cancel_both_triggered {
-                    continue;
+                    return Instruction::Delete((order.id().clone(), Msg::StpCancelTaker), None);
                 }
                 remaining_quantity -= taken_quantity;
                 maker_matches.push((resting_order.id().clone(), taken_quantity));
             }
         }
 
-        if !cancel_both_makers.is_empty() {
-            let mut pairs = vec![(order.id().clone(), Msg::StpCancelTaker)];
-            pairs.extend(
-                cancel_both_makers
-                    .into_iter()
-                    .map(|id| (id, Msg::Cancelled)),
-            );
-            return Instruction::Delete(pairs);
-        }
         if tif == TIF::FOK && remaining_quantity > O::N::default() {
-            return Instruction::Delete(vec![(order.id().clone(), Msg::FOKNotFilled)]);
+            return Instruction::Delete((order.id().clone(), Msg::FOKNotFilled), None);
         }
 
         for (maker_id, taken_quantity) in &maker_matches {
@@ -182,7 +170,7 @@ impl<O: OrderInterface> Evaluator<O> {
             return Instruction::Match(order, remaining, maker_matches, cancel_maker_ids);
         }
         if tif == TIF::IOC {
-            return Instruction::Delete(vec![(order.id().clone(), Msg::IOCNoFill)]);
+            return Instruction::Delete((order.id().clone(), Msg::IOCNoFill), None);
         }
         Instruction::Insert(order, remaining_quantity)
     }
@@ -197,9 +185,9 @@ impl<O: OrderInterface> Evaluator<O> {
     #[inline(always)]
     fn eval_cancel_inner(&mut self, ob: &OrderBook<O>, order_id: O::T) -> Instruction<O> {
         if !ob.orders.contains_key(&order_id) {
-            return Instruction::Delete(vec![(order_id, Msg::OrderNotFound)]);
+            return Instruction::Delete((order_id, Msg::OrderNotFound), None);
         }
         self.temp.insert(order_id.clone(), O::N::default());
-        Instruction::Delete(vec![(order_id, Msg::Cancelled)])
+        Instruction::Delete((order_id, Msg::Cancelled), None)
     }
 }

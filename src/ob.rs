@@ -141,14 +141,10 @@ impl<O: OrderInterface> OrderBook<O> {
         for instruction in instructions {
             let output = match instruction {
                 Instruction::Insert(order, remaining) => self.apply_insert_inner(order, remaining),
-                Instruction::Delete(pairs) => {
-                    let mut out = Vec::with_capacity(pairs.len());
-                    for (order_id, _msg) in pairs {
-                        if self.orders.contains_key(&order_id) {
-                            out.extend(self.apply_delete_inner(order_id));
-                        } else {
-                            out.push((order_id, O::N::default()));
-                        }
+                Instruction::Delete((id, _msg), second) => {
+                    let mut out = self.apply_delete_inner(id);
+                    if let Some((id2, _)) = second {
+                        out.extend(self.apply_delete_inner(id2));
                     }
                     out
                 }
@@ -410,7 +406,7 @@ mod tests {
         let i = eval.eval(&ob, vec![Op::Insert(TestOrder::new("1", true, 1000, 50))]);
         assert_eq!(
             i[0],
-            Instruction::Delete(vec![(String::from("1"), Msg::OrderAlreadyExists)])
+            Instruction::Delete((String::from("1"), Msg::OrderAlreadyExists), None)
         );
     }
 
@@ -421,13 +417,13 @@ mod tests {
         let i = eval.eval(&ob, vec![Op::Delete(String::from("x"))]);
         assert_eq!(
             i[0],
-            Instruction::Delete(vec![(String::from("x"), Msg::OrderNotFound)])
+            Instruction::Delete((String::from("x"), Msg::OrderNotFound), None)
         );
 
         setup_order(&mut ob, "1", true, 1000, 100);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Delete(String::from("1"))]);
-        assert_eq!(i[0], Instruction::Delete(vec![(String::from("1"), Msg::Cancelled)]));
+        assert_eq!(i[0], Instruction::Delete((String::from("1"), Msg::Cancelled), None));
     }
 
     #[test]
@@ -608,17 +604,17 @@ mod tests {
     fn test_apply_delete() {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", true, 1000, 100);
-        ob.apply(vec![Instruction::Delete(vec![(String::from("1"), Msg::Cancelled)])]);
+        ob.apply(vec![Instruction::Delete((String::from("1"), Msg::Cancelled), None)]);
         assert!(ob.bids.is_empty());
 
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", false, 1000, 100);
-        ob.apply(vec![Instruction::Delete(vec![(String::from("1"), Msg::Cancelled)])]);
+        ob.apply(vec![Instruction::Delete((String::from("1"), Msg::Cancelled), None)]);
         assert!(ob.asks.is_empty());
 
         // Non-existent (no panic)
         let mut ob = OrderBook::<TestOrder>::default();
-        ob.apply(vec![Instruction::Delete(vec![(String::from("x"), Msg::OrderNotFound)])]);
+        ob.apply(vec![Instruction::Delete((String::from("x"), Msg::OrderNotFound), None)]);
     }
 
     #[test]
@@ -681,8 +677,8 @@ mod tests {
     fn test_apply_noop() {
         let mut ob = OrderBook::<TestOrder>::default();
         ob.apply(vec![
-            Instruction::Delete(vec![(String::from("x"), Msg::OrderNotFound)]),
-            Instruction::Delete(vec![(String::from("y"), Msg::OrderAlreadyExists)]),
+            Instruction::Delete((String::from("x"), Msg::OrderNotFound), None),
+            Instruction::Delete((String::from("y"), Msg::OrderAlreadyExists), None),
         ]);
         assert!(ob.bids.is_empty());
     }
@@ -749,7 +745,7 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Delete(vec![(String::from("b1"), Msg::FOKNotFilled)])
+            Instruction::Delete((String::from("b1"), Msg::FOKNotFilled), None)
         );
     }
 
@@ -776,7 +772,7 @@ mod tests {
         let i = eval.eval(&ob, vec![Op::Insert(order)]);
         // IOC with no liquidity: one Delete (reject)
         assert_eq!(i.len(), 1);
-        assert_eq!(i[0], Instruction::Delete(vec![(String::from("b1"), Msg::IOCNoFill)]));
+        assert_eq!(i[0], Instruction::Delete((String::from("b1"), Msg::IOCNoFill), None));
     }
 
     #[test]
@@ -803,7 +799,7 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Delete(vec![(String::from("b1"), Msg::PostOnlyWouldTake)])
+            Instruction::Delete((String::from("b1"), Msg::PostOnlyWouldTake), None)
         );
     }
 
@@ -834,7 +830,7 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Delete(vec![(String::from("b1"), Msg::StpCancelTaker)])
+            Instruction::Delete((String::from("b1"), Msg::StpCancelTaker), None)
         );
     }
 
@@ -910,10 +906,10 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Delete(vec![
+            Instruction::Delete(
                 (String::from("b1"), Msg::StpCancelTaker),
-                (String::from("s1"), Msg::Cancelled),
-            ])
+                Some((String::from("s1"), Msg::Cancelled)),
+            )
         );
         let mut ob2 = OrderBook::<TestOrder>::default();
         setup_order_with_owner(&mut ob2, "s1", false, 1000, 100, "alice");
