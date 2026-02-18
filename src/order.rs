@@ -1,5 +1,5 @@
 use std::{
-    fmt::Display,
+    fmt::{Debug, Display},
     hash::Hash,
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
 };
@@ -7,13 +7,13 @@ use std::{
 /// Time in force for an order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TIF {
+    /// Good till cancelled; remainder rests on the book.
+    #[default]
+    GTC,
     /// Fill entire order immediately or cancel (no resting quantity).
     FOK,
     /// Fill as much as possible immediately, cancel the rest (no resting quantity).
     IOC,
-    /// Good till cancelled; remainder rests on the book.
-    #[default]
-    GTC,
 }
 
 /// Self-trade protection mode when taker and maker share the same owner.
@@ -33,13 +33,14 @@ pub enum STP {
 /// Trait defining the interface for orders in the orderbook.
 /// T: Order identifier type (must be unique). N: Numeric type.
 pub trait OrderInterface {
-    type T: Eq + Display + Default + Hash + Clone;
+    type T: Eq + Display + Default + Hash + Clone + Debug;
     type N: Ord
         + Eq
         + Copy
         + Hash
         + Default
         + Display
+        + Debug
         + Add<Output = Self::N>
         + Sub<Output = Self::N>
         + Mul<Output = Self::N>

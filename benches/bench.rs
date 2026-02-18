@@ -1,5 +1,5 @@
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use obcore::{Evaluator, Op, OrderBook, OrderInterface};
+use obcore::{Evaluator, Instruction, InstructionPrimitive, Op, OrderBook, OrderInterface};
 use std::hint::black_box;
 
 /// Order type for benchmarks
@@ -377,10 +377,9 @@ fn bench_apply_match(c: &mut Criterion) {
                 (ob, 0u64, 100u64)
             },
             |(ob, order_id, quantity)| {
-                black_box(ob.apply_match(
-                    black_box(999u64),
-                    vec![(black_box(*order_id), black_box(*quantity))],
-                ))
+                black_box(ob.apply(vec![Instruction::Single(
+                    InstructionPrimitive::Fill(black_box(*order_id), black_box(*quantity)),
+                )]))
             },
             BatchSize::LargeInput,
         );
@@ -402,10 +401,9 @@ fn bench_apply_match(c: &mut Criterion) {
             },
             |(ob, matches)| {
                 for (order_id, quantity) in matches.iter() {
-                    black_box(ob.apply_match(
-                        black_box(999u64),
-                        vec![(black_box(*order_id), black_box(*quantity))],
-                    ));
+                    black_box(ob.apply(vec![Instruction::Single(
+                        InstructionPrimitive::Fill(black_box(*order_id), black_box(*quantity)),
+                    )]));
                 }
             },
             BatchSize::LargeInput,
@@ -428,10 +426,9 @@ fn bench_apply_match(c: &mut Criterion) {
             },
             |(ob, matches)| {
                 for (order_id, quantity) in matches.iter() {
-                    black_box(ob.apply_match(
-                        black_box(999u64),
-                        vec![(black_box(*order_id), black_box(*quantity))],
-                    ));
+                    black_box(ob.apply(vec![Instruction::Single(
+                        InstructionPrimitive::Fill(black_box(*order_id), black_box(*quantity)),
+                    )]));
                 }
             },
             BatchSize::LargeInput,

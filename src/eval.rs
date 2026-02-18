@@ -37,16 +37,24 @@ pub enum Msg {
     StpCancelTaker,
     /// STP CancelBoth: incoming order would match same-owner maker(s), both taker and maker(s) cancelled.
     StpCancelBoth,
+    /// STP CancelMaker: resting maker(s) cancelled (same-owner); taker may still fill against others.
+    StpCancelMaker,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum InstructionPrimitive<O: OrderInterface> {
+    /// (Order, Remaining Quantity)
+    Insert(O, O::N),
+    /// (Order ID, Reason)
+    Delete(O::T, Msg),
+    /// (Order ID, Quantity)
+    Fill(O::T, O::N),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Instruction<O: OrderInterface> {
-    // (Order, Remaining Quantity)
-    Insert(O, O::N),
-    /// Cancel/reject one or two orders. (id, reason), optional second. Apply outputs (id, 0) for each.
-    Delete((O::T, Msg), Option<(O::T, Msg)>),
-    /// (Taker order, remaining, maker matches, makers to cancel). Apply inserts the order when remaining > 0.
-    Match(O, O::N, Vec<(O::T, O::N)>, Vec<O::T>),
+    Single(InstructionPrimitive<O>),
+    Multi(Vec<InstructionPrimitive<O>>),
 }
 
 /// Evaluator: turns ops into instructions without mutating the book.
@@ -97,7 +105,10 @@ impl<O: OrderInterface> Evaluator<O> {
     fn eval_insert_inner(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
         // Reject if order id already on book.
         if ob.orders.contains_key(order.id()) {
-            return Instruction::Delete((order.id().clone(), Msg::OrderAlreadyExists), None);
+            return Instruction::Single(InstructionPrimitive::Delete(
+                order.id().clone(),
+                Msg::OrderAlreadyExists,
+            ));
         }
 
         let tif = order.tif();
@@ -136,7 +147,10 @@ impl<O: OrderInterface> Evaluator<O> {
                 let same_owner = taker_owner == resting_order.owner();
 
                 if post_only && taken_quantity > zero {
-                    return Instruction::Delete((order.id().clone(), Msg::PostOnlyFilled), None);
+                    return Instruction::Single(InstructionPrimitive::Delete(
+                        order.id().clone(),
+                        Msg::PostOnlyFilled,
+                    ));
                 }
 
                 // STP: same-owner → don't take from this maker (or reject taker / cancel both).
@@ -150,16 +164,25 @@ impl<O: OrderInterface> Evaluator<O> {
                             self.temp.insert(resting_order.id().clone(), zero);
                         } else if stp == STP::CancelBoth && taken_quantity > zero {
                             self.temp.insert(resting_order.id().clone(), zero);
-                            return Instruction::Delete(
-                                (order.id().clone(), Msg::StpCancelBoth),
-                                Some((resting_order.id().clone(), Msg::StpCancelBoth)),
-                            );
+                            return Instruction::Multi(vec![
+                                InstructionPrimitive::Delete(
+                                    order.id().clone(),
+                                    Msg::StpCancelBoth,
+                                ),
+                                InstructionPrimitive::Delete(
+                                    resting_order.id().clone(),
+                                    Msg::StpCancelBoth,
+                                ),
+                            ]);
                         }
                     }
                     continue;
                 }
                 if stp == STP::CancelTaker && same_owner && taken_quantity > zero {
-                    return Instruction::Delete((order.id().clone(), Msg::StpCancelTaker), None);
+                    return Instruction::Single(InstructionPrimitive::Delete(
+                        order.id().clone(),
+                        Msg::StpCancelTaker,
+                    ));
                 }
                 remaining_quantity -= taken_quantity;
                 maker_matches.push((resting_order.id().clone(), taken_quantity));
@@ -167,7 +190,10 @@ impl<O: OrderInterface> Evaluator<O> {
         }
 
         if tif == TIF::FOK && remaining_quantity > zero {
-            return Instruction::Delete((order.id().clone(), Msg::FOKNotFilled), None);
+            return Instruction::Single(InstructionPrimitive::Delete(
+                order.id().clone(),
+                Msg::FOKNotFilled,
+            ));
         }
 
         // Record fills in temp so later ops in this batch see reduced maker qty.
@@ -188,13 +214,33 @@ impl<O: OrderInterface> Evaluator<O> {
         } else {
             remaining_quantity
         };
+
         if has_match_or_cancel {
-            return Instruction::Match(order, remaining, maker_matches, cancel_maker_ids);
+            let cap =
+                maker_matches.len() + cancel_maker_ids.len() + if remaining > zero { 1 } else { 0 };
+            let mut primitives = Vec::with_capacity(cap);
+            primitives.extend(
+                maker_matches
+                    .into_iter()
+                    .map(|(id, qty)| InstructionPrimitive::Fill(id, qty)),
+            );
+            for maker_id in cancel_maker_ids {
+                primitives.push(InstructionPrimitive::Delete(maker_id, Msg::StpCancelMaker));
+            }
+            if remaining > zero {
+                primitives.push(InstructionPrimitive::Insert(order, remaining));
+            }
+            return Instruction::Multi(primitives);
         }
+
         if tif == TIF::IOC {
-            return Instruction::Delete((order.id().clone(), Msg::IOCNoFill), None);
+            return Instruction::Single(InstructionPrimitive::Delete(
+                order.id().clone(),
+                Msg::IOCNoFill,
+            ));
         }
-        Instruction::Insert(order, remaining_quantity)
+
+        Instruction::Single(InstructionPrimitive::Insert(order, remaining_quantity))
     }
 
     /// Evaluates a single cancel operation. Only available with the `bench` feature.
@@ -207,9 +253,9 @@ impl<O: OrderInterface> Evaluator<O> {
     #[inline(always)]
     fn eval_cancel_inner(&mut self, ob: &OrderBook<O>, order_id: O::T) -> Instruction<O> {
         if !ob.orders.contains_key(&order_id) {
-            return Instruction::Delete((order_id, Msg::OrderNotFound), None);
+            return Instruction::Single(InstructionPrimitive::Delete(order_id, Msg::OrderNotFound));
         }
         self.temp.insert(order_id.clone(), O::N::default()); // later ops in batch treat as gone
-        Instruction::Delete((order_id, Msg::UserCancelled), None)
+        Instruction::Single(InstructionPrimitive::Delete(order_id, Msg::UserCancelled))
     }
 }
