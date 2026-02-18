@@ -99,11 +99,8 @@ impl<O: OrderInterface> Evaluator<O> {
         self.eval_insert_inner(ob, order)
     }
 
-    /// Inserts an incoming order: reject if duplicate, else walk opposite side and compute
-    /// matches (and any STP cancels). Returns Insert / Match / Delete(reject) without mutating the book.
     #[inline(always)]
     fn eval_insert_inner(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
-        // Reject if order id already on book.
         if ob.orders.contains_key(order.id()) {
             return Instruction::Single(InstructionPrimitive::Delete(
                 order.id().clone(),
@@ -117,79 +114,70 @@ impl<O: OrderInterface> Evaluator<O> {
         let taker_owner = order.owner();
         let is_buy = order.is_buy();
         let price = order.price();
-        let opposite_side = if is_buy { &ob.asks } else { &ob.bids };
+        let opposite = if is_buy { &ob.asks } else { &ob.bids };
 
-        let mut remaining_quantity = order.remaining();
-        let mut maker_matches = Vec::new(); // (maker_id, qty) for each fill
-        let mut cancel_maker_ids = Vec::new(); // same-owner makers to cancel (STP CancelMaker)
         let zero = O::N::default();
+        let mut remaining = order.remaining();
+        let mut fills: Vec<(O::T, O::N)> = Vec::new();
+        let mut stp_cancels: Vec<O::T> = Vec::new();
 
-        // --- Matching loop: opposite side, best price first, FIFO within level ---
-        // Stop when taker is filled (remaining_quantity == 0) or we leave the book (dominated).
-        'outer: for level in opposite_side.iter() {
-            let dominated = is_buy && price < level.price() || !is_buy && price > level.price();
-            if dominated {
+        'outer: for level in opposite.iter() {
+            if (is_buy && price < level.price()) || (!is_buy && price > level.price()) {
                 break;
             }
-            for resting_order in level.iter() {
-                if remaining_quantity == zero {
+            for maker in level.iter() {
+                if remaining == zero {
                     break 'outer;
                 }
-                // Maker's available qty: from temp (if reduced by earlier ops in batch) else from book.
-                let maker_remaining = *self
-                    .temp
-                    .get(resting_order.id())
-                    .unwrap_or(&resting_order.remaining());
-                if maker_remaining == zero {
+                let maker_avail = *self.temp.get(maker.id()).unwrap_or(&maker.remaining());
+                if maker_avail == zero {
                     continue;
                 }
-                let taken_quantity = remaining_quantity.min(maker_remaining);
-                let same_owner = taker_owner == resting_order.owner();
+                let fill_qty = remaining.min(maker_avail);
 
-                if post_only && taken_quantity > zero {
+                if post_only {
                     return Instruction::Single(InstructionPrimitive::Delete(
                         order.id().clone(),
                         Msg::PostOnlyFilled,
                     ));
                 }
 
-                // STP: same-owner → don't take from this maker (or reject taker / cancel both).
-                // CancelMaker: record maker for cancel, skip fill. CancelBoth: reject taker + cancel this maker, return now.
-                // CancelTaker: if we would take from same-owner, reject taker and return.
-                let take_from_maker = !same_owner || matches!(stp, STP::None | STP::CancelTaker);
-                if !take_from_maker {
-                    if same_owner {
-                        if stp == STP::CancelMaker {
-                            cancel_maker_ids.push(resting_order.id().clone());
-                            self.temp.insert(resting_order.id().clone(), zero);
-                        } else if stp == STP::CancelBoth && taken_quantity > zero {
-                            self.temp.insert(resting_order.id().clone(), zero);
+                if taker_owner == maker.owner() {
+                    match stp {
+                        STP::None => {}
+                        STP::CancelTaker => {
+                            return Instruction::Single(InstructionPrimitive::Delete(
+                                order.id().clone(),
+                                Msg::StpCancelTaker,
+                            ));
+                        }
+                        STP::CancelMaker => {
+                            stp_cancels.push(maker.id().clone());
+                            self.temp.insert(maker.id().clone(), zero);
+                            continue;
+                        }
+                        STP::CancelBoth => {
+                            self.temp.insert(maker.id().clone(), zero);
                             return Instruction::Multi(vec![
                                 InstructionPrimitive::Delete(
                                     order.id().clone(),
                                     Msg::StpCancelBoth,
                                 ),
                                 InstructionPrimitive::Delete(
-                                    resting_order.id().clone(),
+                                    maker.id().clone(),
                                     Msg::StpCancelBoth,
                                 ),
                             ]);
                         }
                     }
-                    continue;
                 }
-                if stp == STP::CancelTaker && same_owner && taken_quantity > zero {
-                    return Instruction::Single(InstructionPrimitive::Delete(
-                        order.id().clone(),
-                        Msg::StpCancelTaker,
-                    ));
-                }
-                remaining_quantity -= taken_quantity;
-                maker_matches.push((resting_order.id().clone(), taken_quantity));
+
+                remaining -= fill_qty;
+                fills.push((maker.id().clone(), fill_qty));
             }
         }
 
-        if tif == TIF::FOK && remaining_quantity > zero {
+        if tif == TIF::FOK && remaining > zero {
             return Instruction::Single(InstructionPrimitive::Delete(
                 order.id().clone(),
                 Msg::FOKNotFilled,
@@ -197,40 +185,33 @@ impl<O: OrderInterface> Evaluator<O> {
         }
 
         // Record fills in temp so later ops in this batch see reduced maker qty.
-        for (maker_id, taken_quantity) in &maker_matches {
-            let remaining = self
+        for (id, qty) in &fills {
+            let prev = self
                 .temp
-                .get(maker_id)
+                .get(id)
                 .copied()
-                .unwrap_or_else(|| ob.order(maker_id).map(|o| o.remaining()).unwrap_or(zero));
-            self.temp
-                .insert(maker_id.clone(), remaining - *taken_quantity);
+                .unwrap_or_else(|| ob.order(id).map(|o| o.remaining()).unwrap_or(zero));
+            self.temp.insert(id.clone(), prev - *qty);
         }
 
-        // Emit instruction: Match (if any fill or STP CancelMaker), else Insert or IOC no-fill reject.
-        let has_match_or_cancel = !maker_matches.is_empty() || !cancel_maker_ids.is_empty();
-        let remaining = if tif == TIF::IOC {
-            zero
-        } else {
-            remaining_quantity
-        };
+        let has_activity = !fills.is_empty() || !stp_cancels.is_empty();
+        let rest = if tif == TIF::IOC { zero } else { remaining };
 
-        if has_match_or_cancel {
-            let cap =
-                maker_matches.len() + cancel_maker_ids.len() + if remaining > zero { 1 } else { 0 };
-            let mut primitives = Vec::with_capacity(cap);
-            primitives.extend(
-                maker_matches
+        if has_activity {
+            let cap = fills.len() + stp_cancels.len() + usize::from(rest > zero);
+            let mut out = Vec::with_capacity(cap);
+            out.extend(
+                fills
                     .into_iter()
                     .map(|(id, qty)| InstructionPrimitive::Fill(id, qty)),
             );
-            for maker_id in cancel_maker_ids {
-                primitives.push(InstructionPrimitive::Delete(maker_id, Msg::StpCancelMaker));
+            for id in stp_cancels {
+                out.push(InstructionPrimitive::Delete(id, Msg::StpCancelMaker));
             }
-            if remaining > zero {
-                primitives.push(InstructionPrimitive::Insert(order, remaining));
+            if rest > zero {
+                out.push(InstructionPrimitive::Insert(order, rest));
             }
-            return Instruction::Multi(primitives);
+            return Instruction::Multi(out);
         }
 
         if tif == TIF::IOC {
@@ -240,7 +221,7 @@ impl<O: OrderInterface> Evaluator<O> {
             ));
         }
 
-        Instruction::Single(InstructionPrimitive::Insert(order, remaining_quantity))
+        Instruction::Single(InstructionPrimitive::Insert(order, remaining))
     }
 
     /// Evaluates a single cancel operation. Only available with the `bench` feature.
