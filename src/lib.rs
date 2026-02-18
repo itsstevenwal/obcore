@@ -8,7 +8,7 @@ mod side;
 
 pub use eval::{Evaluator, Instruction, InstructionPrimitive, Msg, Op};
 pub use level::Level;
-pub use list::List;
+pub use list::{List, Pool};
 pub use ob::*;
 pub use order::{OrderInterface, STP, TIF};
 pub use side::Side;

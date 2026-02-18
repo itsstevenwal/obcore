@@ -1,13 +1,14 @@
 #[cfg(feature = "bench")]
 use crate::eval::Msg;
 use crate::eval::{Instruction, InstructionPrimitive};
-use crate::{hash::FxHashMap, list::Node, order::OrderInterface, side::Side};
+use crate::{hash::FxHashMap, list::{Node, Pool}, order::OrderInterface, side::Side};
 
 /// A complete orderbook with bid and ask sides.
 pub struct OrderBook<O: OrderInterface> {
     pub(crate) bids: Side<O>,
     pub(crate) asks: Side<O>,
     pub(crate) orders: FxHashMap<O::T, *mut Node<O>>,
+    pub(crate) pool: Pool<O>,
 }
 
 impl<O: OrderInterface> Default for OrderBook<O> {
@@ -16,6 +17,7 @@ impl<O: OrderInterface> Default for OrderBook<O> {
             bids: Side::new(true),
             asks: Side::new(false),
             orders: FxHashMap::default(),
+            pool: Pool::new(),
         }
     }
 }
@@ -156,16 +158,26 @@ impl<O: OrderInterface> OrderBook<O> {
 
     #[inline(always)]
     fn apply_single(&mut self, p: InstructionPrimitive<O>) -> OutputPrimitive<O> {
-        let Self { bids, asks, orders } = self;
-        Self::apply_primitive(bids, asks, orders, p)
+        let Self {
+            bids,
+            asks,
+            orders,
+            pool,
+        } = self;
+        Self::apply_primitive(bids, asks, orders, pool, p)
     }
 
     #[inline(always)]
     fn apply_multi(&mut self, primitives: Vec<InstructionPrimitive<O>>) -> Vec<OutputPrimitive<O>> {
-        let Self { bids, asks, orders } = self;
+        let Self {
+            bids,
+            asks,
+            orders,
+            pool,
+        } = self;
         let mut out = Vec::with_capacity(primitives.len());
         for p in primitives {
-            out.push(Self::apply_primitive(bids, asks, orders, p));
+            out.push(Self::apply_primitive(bids, asks, orders, pool, p));
         }
         out
     }
@@ -175,6 +187,7 @@ impl<O: OrderInterface> OrderBook<O> {
         bids: &mut Side<O>,
         asks: &mut Side<O>,
         orders: &mut FxHashMap<O::T, *mut Node<O>>,
+        pool: &mut Pool<O>,
         p: InstructionPrimitive<O>,
     ) -> OutputPrimitive<O> {
         match p {
@@ -182,7 +195,7 @@ impl<O: OrderInterface> OrderBook<O> {
                 let &node_ptr = orders.get(&order_id).unwrap();
                 let is_buy = unsafe { (*node_ptr).data.is_buy() };
                 let side = if is_buy { bids } else { asks };
-                let removed = side.fill_order(node_ptr, quantity);
+                let removed = side.fill_order(node_ptr, quantity, pool);
                 if removed {
                     orders.remove(&order_id);
                     OutputPrimitive::Filled
@@ -199,7 +212,7 @@ impl<O: OrderInterface> OrderBook<O> {
                     let id = order.id().clone();
                     let is_buy = order.is_buy();
                     let side = if is_buy { bids } else { asks };
-                    let node_ptr = side.insert_order(order);
+                    let node_ptr = side.insert_order(order, pool);
                     orders.insert(id, node_ptr);
                 }
                 OutputPrimitive::Inserted(remaining)
@@ -208,7 +221,7 @@ impl<O: OrderInterface> OrderBook<O> {
                 if let Some(&node_ptr) = orders.get(&order_id) {
                     let is_buy = unsafe { (*node_ptr).data.is_buy() };
                     let side = if is_buy { bids } else { asks };
-                    side.remove_order(node_ptr);
+                    side.remove_order(node_ptr, pool);
                     orders.remove(&order_id);
                 }
                 OutputPrimitive::Deleted
@@ -225,9 +238,15 @@ mod tests {
 
     fn setup_order(ob: &mut OrderBook<TestOrder>, id: &str, is_buy: bool, price: u64, qty: u64) {
         let order = TestOrder::new(id, is_buy, price, qty);
-        let side = if is_buy { &mut ob.bids } else { &mut ob.asks };
-        let node_ptr = side.insert_order(order);
-        ob.orders.insert(String::from(id), node_ptr);
+        let OrderBook {
+            bids,
+            asks,
+            orders,
+            pool,
+        } = ob;
+        let side = if is_buy { bids } else { asks };
+        let node_ptr = side.insert_order(order, pool);
+        orders.insert(String::from(id), node_ptr);
     }
 
     fn setup_order_with_owner(
@@ -239,9 +258,15 @@ mod tests {
         owner: &str,
     ) {
         let order = TestOrder::new(id, is_buy, price, qty).with_owner(owner);
-        let side = if is_buy { &mut ob.bids } else { &mut ob.asks };
-        let node_ptr = side.insert_order(order);
-        ob.orders.insert(String::from(id), node_ptr);
+        let OrderBook {
+            bids,
+            asks,
+            orders,
+            pool,
+        } = ob;
+        let side = if is_buy { bids } else { asks };
+        let node_ptr = side.insert_order(order, pool);
+        orders.insert(String::from(id), node_ptr);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

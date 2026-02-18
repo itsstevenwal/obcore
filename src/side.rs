@@ -1,4 +1,8 @@
-use crate::{level::Level, list::Node, order::OrderInterface};
+use crate::{
+    level::Level,
+    list::{Node, Pool},
+    order::OrderInterface,
+};
 use std::collections::BTreeMap;
 
 /// One side of an orderbook (bids or asks).
@@ -50,26 +54,26 @@ impl<O: OrderInterface> Side<O> {
     }
 
     #[inline(always)]
-    pub fn insert_order(&mut self, order: O) -> *mut Node<O> {
+    pub fn insert_order(&mut self, order: O, pool: &mut Pool<O>) -> *mut Node<O> {
         let price = order.price();
         self.levels
             .entry(price)
             .or_insert_with(|| Level::new(price))
-            .add_order(order)
+            .add_order(order, pool)
     }
 
     /// Fills an order and returns true if fully filled.
     /// Caller must ensure node_ptr is valid and in this side.
     #[inline(always)]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn fill_order(&mut self, node_ptr: *mut Node<O>, fill: O::N) -> bool {
+    pub fn fill_order(&mut self, node_ptr: *mut Node<O>, fill: O::N, pool: &mut Pool<O>) -> bool {
         let order = unsafe { &mut (*node_ptr).data };
         let price = order.price();
         let btree_map::Entry::Occupied(mut entry) = self.levels.entry(price) else {
             unreachable!()
         };
         let level = entry.get_mut();
-        let removed = level.fill_order(node_ptr, order, fill);
+        let removed = level.fill_order(node_ptr, order, fill, pool);
         if level.is_empty() {
             entry.remove();
         }
@@ -80,13 +84,13 @@ impl<O: OrderInterface> Side<O> {
     /// Caller must ensure node_ptr is valid and in this side.
     #[inline(always)]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn remove_order(&mut self, node_ptr: *mut Node<O>) {
+    pub fn remove_order(&mut self, node_ptr: *mut Node<O>, pool: &mut Pool<O>) {
         let price = unsafe { (*node_ptr).data.price() };
         let btree_map::Entry::Occupied(mut entry) = self.levels.entry(price) else {
             unreachable!()
         };
         let level = entry.get_mut();
-        level.remove_order(node_ptr);
+        level.remove_order(node_ptr, pool);
         if level.is_empty() {
             entry.remove();
         }
@@ -168,7 +172,8 @@ mod tests {
     #[test]
     fn test_insert_order() {
         let mut side = Side::<TestOrder>::new(true);
-        let _node_ptr = side.insert_order(TestOrder::new("1", true, 100, 50));
+        let mut pool = Pool::new();
+        let _node_ptr = side.insert_order(TestOrder::new("1", true, 100, 50), &mut pool);
         assert!(!side.is_empty());
         assert_eq!(side.height(), 1);
     }
@@ -176,34 +181,38 @@ mod tests {
     #[test]
     fn test_insert_multiple_orders_same_price() {
         let mut side = Side::<TestOrder>::new(true);
-        side.insert_order(TestOrder::new("1", true, 100, 50));
-        side.insert_order(TestOrder::new("2", true, 100, 30));
+        let mut pool = Pool::new();
+        side.insert_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        side.insert_order(TestOrder::new("2", true, 100, 30), &mut pool);
         assert_eq!(side.height(), 1);
     }
 
     #[test]
     fn test_insert_orders_different_prices() {
         let mut side = Side::<TestOrder>::new(true);
-        side.insert_order(TestOrder::new("1", true, 100, 50));
-        side.insert_order(TestOrder::new("2", true, 200, 30));
-        side.insert_order(TestOrder::new("3", true, 150, 20));
+        let mut pool = Pool::new();
+        side.insert_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        side.insert_order(TestOrder::new("2", true, 200, 30), &mut pool);
+        side.insert_order(TestOrder::new("3", true, 150, 20), &mut pool);
         assert_eq!(side.height(), 3);
     }
 
     #[test]
     fn test_remove_order() {
         let mut side = Side::<TestOrder>::new(true);
-        let node_ptr = side.insert_order(TestOrder::new("1", true, 100, 50));
-        side.insert_order(TestOrder::new("2", true, 100, 30));
-        side.remove_order(node_ptr);
+        let mut pool = Pool::new();
+        let node_ptr = side.insert_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        side.insert_order(TestOrder::new("2", true, 100, 30), &mut pool);
+        side.remove_order(node_ptr, &mut pool);
         assert_eq!(side.height(), 1);
     }
 
     #[test]
     fn test_remove_order_single_order() {
         let mut side = Side::<TestOrder>::new(true);
-        let node_ptr = side.insert_order(TestOrder::new("1", true, 100, 50));
-        side.remove_order(node_ptr);
+        let mut pool = Pool::new();
+        let node_ptr = side.insert_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        side.remove_order(node_ptr, &mut pool);
         let level_count: usize = side.iter().count();
         assert_eq!(level_count, 0);
     }
@@ -211,9 +220,10 @@ mod tests {
     #[test]
     fn test_iter_bids() {
         let mut side = Side::<TestOrder>::new(true);
-        side.insert_order(TestOrder::new("1", true, 100, 50));
-        side.insert_order(TestOrder::new("2", true, 300, 30));
-        side.insert_order(TestOrder::new("3", true, 200, 20));
+        let mut pool = Pool::new();
+        side.insert_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        side.insert_order(TestOrder::new("2", true, 300, 30), &mut pool);
+        side.insert_order(TestOrder::new("3", true, 200, 20), &mut pool);
         let prices: Vec<u64> = side.iter().map(|level| level.price()).collect();
         assert_eq!(prices, vec![300, 200, 100]);
     }
@@ -221,9 +231,10 @@ mod tests {
     #[test]
     fn test_iter_asks() {
         let mut side = Side::<TestOrder>::new(false);
-        side.insert_order(TestOrder::new("1", false, 100, 50));
-        side.insert_order(TestOrder::new("2", false, 300, 30));
-        side.insert_order(TestOrder::new("3", false, 200, 20));
+        let mut pool = Pool::new();
+        side.insert_order(TestOrder::new("1", false, 100, 50), &mut pool);
+        side.insert_order(TestOrder::new("2", false, 300, 30), &mut pool);
+        side.insert_order(TestOrder::new("3", false, 200, 20), &mut pool);
         let prices: Vec<u64> = side.iter().map(|level| level.price()).collect();
         assert_eq!(prices, vec![100, 200, 300]);
     }
@@ -231,8 +242,9 @@ mod tests {
     #[test]
     fn test_iter_mut() {
         let mut side = Side::<TestOrder>::new(true);
-        side.insert_order(TestOrder::new("1", true, 100, 50));
-        side.insert_order(TestOrder::new("2", true, 200, 30));
+        let mut pool = Pool::new();
+        side.insert_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        side.insert_order(TestOrder::new("2", true, 200, 30), &mut pool);
         for level in side.iter_mut() {
             let _ = level.price();
         }
@@ -242,12 +254,13 @@ mod tests {
     #[test]
     fn test_height() {
         let mut side = Side::<TestOrder>::new(true);
+        let mut pool = Pool::new();
         assert_eq!(side.height(), 0);
-        side.insert_order(TestOrder::new("1", true, 100, 50));
+        side.insert_order(TestOrder::new("1", true, 100, 50), &mut pool);
         assert_eq!(side.height(), 1);
-        side.insert_order(TestOrder::new("2", true, 200, 30));
+        side.insert_order(TestOrder::new("2", true, 200, 30), &mut pool);
         assert_eq!(side.height(), 2);
-        side.insert_order(TestOrder::new("3", true, 100, 20));
+        side.insert_order(TestOrder::new("3", true, 100, 20), &mut pool);
         assert_eq!(side.height(), 2);
     }
 }

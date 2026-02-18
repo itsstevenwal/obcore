@@ -10,12 +10,71 @@ pub struct Node<T> {
 
 impl<T> Node<T> {
     #[inline(always)]
-    fn new(data: T) -> Box<Self> {
-        Box::new(Node {
+    fn new(data: T) -> Self {
+        Node {
             data,
             prev: ptr::null_mut(),
             next: ptr::null_mut(),
-        })
+        }
+    }
+}
+
+/// Intrusive free-list pool for reusing Node allocations.
+/// Freed nodes are linked through their `next` pointer, so push/pop is O(1)
+/// with zero auxiliary allocations.
+pub struct Pool<T> {
+    free: *mut Node<T>,
+}
+
+impl<T> Pool<T> {
+    #[inline]
+    pub fn new() -> Self {
+        Pool {
+            free: ptr::null_mut(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn alloc(&mut self, data: T) -> *mut Node<T> {
+        let ptr = self.free;
+        if !ptr.is_null() {
+            unsafe {
+                self.free = (*ptr).next;
+                ptr::write(ptr, Node::new(data));
+            }
+            ptr
+        } else {
+            Box::into_raw(Box::new(Node::new(data)))
+        }
+    }
+
+    #[inline(always)]
+    pub fn dealloc(&mut self, ptr: *mut Node<T>) -> T {
+        unsafe {
+            let data = ptr::read(&(*ptr).data);
+            (*ptr).next = self.free;
+            self.free = ptr;
+            data
+        }
+    }
+}
+
+impl<T> Default for Pool<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Drop for Pool<T> {
+    fn drop(&mut self) {
+        let mut current = self.free;
+        while !current.is_null() {
+            unsafe {
+                let next = (*current).next;
+                std::alloc::dealloc(current as *mut u8, std::alloc::Layout::new::<Node<T>>());
+                current = next;
+            }
+        }
     }
 }
 
@@ -48,8 +107,8 @@ impl<T> List<T> {
 
     /// Returns pointer to the newly inserted node.
     #[inline(always)]
-    pub fn push_back(&mut self, data: T) -> *mut Node<T> {
-        let new_node = Box::into_raw(Node::new(data));
+    pub fn push_back(&mut self, data: T, pool: &mut Pool<T>) -> *mut Node<T> {
+        let new_node = pool.alloc(data);
         unsafe {
             if self.tail.is_null() {
                 self.head = new_node;
@@ -85,7 +144,7 @@ impl<T> List<T> {
     /// Use this when the pointer is known to be non-null and in the list (e.g. from `push_back`).
     #[inline(always)]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn remove_unchecked(&mut self, node_ptr: *mut Node<T>) -> T {
+    pub fn remove_unchecked(&mut self, node_ptr: *mut Node<T>, pool: &mut Pool<T>) -> T {
         unsafe {
             let prev = (*node_ptr).prev;
             let next = (*node_ptr).next;
@@ -100,18 +159,18 @@ impl<T> List<T> {
                 (*next).prev = prev;
             }
             self.length -= 1;
-            Box::from_raw(node_ptr).data
+            pool.dealloc(node_ptr)
         }
     }
 
     /// Removes node at pointer. Caller must ensure pointer is valid and in this list.
     #[inline(always)]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn remove(&mut self, node_ptr: *mut Node<T>) -> Option<T> {
+    pub fn remove(&mut self, node_ptr: *mut Node<T>, pool: &mut Pool<T>) -> Option<T> {
         if node_ptr.is_null() || self.length == 0 {
             return None;
         }
-        Some(self.remove_unchecked(node_ptr))
+        Some(self.remove_unchecked(node_ptr, pool))
     }
 }
 
@@ -123,7 +182,14 @@ impl<T> Default for List<T> {
 
 impl<T> Drop for List<T> {
     fn drop(&mut self) {
-        while self.pop_front().is_some() {}
+        let mut current = self.head;
+        while !current.is_null() {
+            unsafe {
+                let next = (*current).next;
+                let _ = Box::from_raw(current);
+                current = next;
+            }
+        }
     }
 }
 
@@ -234,9 +300,10 @@ mod tests {
     #[test]
     fn test_push_back() {
         let mut list = List::new();
-        list.push_back(1);
-        list.push_back(2);
-        list.push_back(3);
+        let mut pool = Pool::new();
+        list.push_back(1, &mut pool);
+        list.push_back(2, &mut pool);
+        list.push_back(3, &mut pool);
         assert_eq!(list.len(), 3);
         assert_eq!(list.iter().last().unwrap(), &3);
     }
@@ -244,9 +311,10 @@ mod tests {
     #[test]
     fn test_pop_front() {
         let mut list = List::new();
-        list.push_back(1);
-        list.push_back(2);
-        list.push_back(3);
+        let mut pool = Pool::new();
+        list.push_back(1, &mut pool);
+        list.push_back(2, &mut pool);
+        list.push_back(3, &mut pool);
 
         let node1 = list.pop_front().unwrap();
         assert_eq!(unsafe { (*node1).data }, 1);
@@ -274,9 +342,10 @@ mod tests {
     #[test]
     fn test_into_iter() {
         let mut list = List::new();
-        list.push_back(1);
-        list.push_back(2);
-        list.push_back(3);
+        let mut pool = Pool::new();
+        list.push_back(1, &mut pool);
+        list.push_back(2, &mut pool);
+        list.push_back(3, &mut pool);
         let vec: Vec<i32> = list.into_iter().collect();
         assert_eq!(vec, vec![1, 2, 3]);
     }
@@ -284,17 +353,19 @@ mod tests {
     #[test]
     fn test_drop() {
         let mut list = List::new();
+        let mut pool = Pool::new();
         for i in 0..100 {
-            list.push_back(i);
+            list.push_back(i, &mut pool);
         }
     }
 
     #[test]
     fn test_iter() {
         let mut list = List::new();
-        list.push_back(1);
-        list.push_back(2);
-        list.push_back(3);
+        let mut pool = Pool::new();
+        list.push_back(1, &mut pool);
+        list.push_back(2, &mut pool);
+        list.push_back(3, &mut pool);
         let vec: Vec<&i32> = list.iter().collect();
         assert_eq!(vec, vec![&1, &2, &3]);
         assert_eq!(list.len(), 3);
@@ -303,9 +374,10 @@ mod tests {
     #[test]
     fn test_iter_mut() {
         let mut list = List::new();
-        list.push_back(1);
-        list.push_back(2);
-        list.push_back(3);
+        let mut pool = Pool::new();
+        list.push_back(1, &mut pool);
+        list.push_back(2, &mut pool);
+        list.push_back(3, &mut pool);
         for item in list.iter_mut() {
             *item *= 2;
         }
@@ -317,8 +389,9 @@ mod tests {
     #[test]
     fn test_remove_null_pointer() {
         let mut list = List::new();
-        list.push_back(1);
-        let result = list.remove(std::ptr::null_mut());
+        let mut pool = Pool::new();
+        list.push_back(1, &mut pool);
+        let result = list.remove(std::ptr::null_mut(), &mut pool);
         assert_eq!(result, None);
         assert_eq!(list.len(), 1);
     }
@@ -326,10 +399,11 @@ mod tests {
     #[test]
     fn test_remove_head() {
         let mut list = List::new();
-        let node1 = list.push_back(1);
-        list.push_back(2);
-        list.push_back(3);
-        let removed = list.remove(node1);
+        let mut pool = Pool::new();
+        let node1 = list.push_back(1, &mut pool);
+        list.push_back(2, &mut pool);
+        list.push_back(3, &mut pool);
+        let removed = list.remove(node1, &mut pool);
         assert_eq!(removed, Some(1));
         assert_eq!(list.len(), 2);
         let vec: Vec<&i32> = list.iter().collect();
@@ -339,10 +413,11 @@ mod tests {
     #[test]
     fn test_remove_tail() {
         let mut list = List::new();
-        list.push_back(1);
-        list.push_back(2);
-        let node3 = list.push_back(3);
-        let removed = list.remove(node3);
+        let mut pool = Pool::new();
+        list.push_back(1, &mut pool);
+        list.push_back(2, &mut pool);
+        let node3 = list.push_back(3, &mut pool);
+        let removed = list.remove(node3, &mut pool);
         assert_eq!(removed, Some(3));
         assert_eq!(list.len(), 2);
         let vec: Vec<&i32> = list.iter().collect();
@@ -352,10 +427,11 @@ mod tests {
     #[test]
     fn test_remove_middle() {
         let mut list = List::new();
-        list.push_back(1);
-        let node2 = list.push_back(2);
-        list.push_back(3);
-        let removed = list.remove(node2);
+        let mut pool = Pool::new();
+        list.push_back(1, &mut pool);
+        let node2 = list.push_back(2, &mut pool);
+        list.push_back(3, &mut pool);
+        let removed = list.remove(node2, &mut pool);
         assert_eq!(removed, Some(2));
         assert_eq!(list.len(), 2);
         let vec: Vec<&i32> = list.iter().collect();
@@ -365,8 +441,9 @@ mod tests {
     #[test]
     fn test_remove_only_node() {
         let mut list = List::new();
-        let node1 = list.push_back(1);
-        let removed = list.remove(node1);
+        let mut pool = Pool::new();
+        let node1 = list.push_back(1, &mut pool);
+        let removed = list.remove(node1, &mut pool);
         assert_eq!(removed, Some(1));
         assert_eq!(list.len(), 0);
         assert!(list.is_empty());
@@ -377,37 +454,60 @@ mod tests {
     #[test]
     fn test_remove_multiple_nodes() {
         let mut list = List::new();
-        let node1 = list.push_back(1);
-        let node2 = list.push_back(2);
-        let node3 = list.push_back(3);
-        let node4 = list.push_back(4);
-        let node5 = list.push_back(5);
+        let mut pool = Pool::new();
+        let node1 = list.push_back(1, &mut pool);
+        let node2 = list.push_back(2, &mut pool);
+        let node3 = list.push_back(3, &mut pool);
+        let node4 = list.push_back(4, &mut pool);
+        let node5 = list.push_back(5, &mut pool);
 
-        let removed = list.remove(node3);
+        let removed = list.remove(node3, &mut pool);
         assert_eq!(removed, Some(3));
         assert_eq!(list.len(), 4);
         let vec: Vec<&i32> = list.iter().collect();
         assert_eq!(vec, vec![&1, &2, &4, &5]);
 
-        let removed = list.remove(node5);
+        let removed = list.remove(node5, &mut pool);
         assert_eq!(removed, Some(5));
         assert_eq!(list.len(), 3);
         let vec: Vec<&i32> = list.iter().collect();
         assert_eq!(vec, vec![&1, &2, &4]);
 
-        let removed = list.remove(node1);
+        let removed = list.remove(node1, &mut pool);
         assert_eq!(removed, Some(1));
         assert_eq!(list.len(), 2);
         let vec: Vec<&i32> = list.iter().collect();
         assert_eq!(vec, vec![&2, &4]);
 
-        let removed = list.remove(node2);
+        let removed = list.remove(node2, &mut pool);
         assert_eq!(removed, Some(2));
         assert_eq!(list.len(), 1);
 
-        let removed = list.remove(node4);
+        let removed = list.remove(node4, &mut pool);
         assert_eq!(removed, Some(4));
         assert_eq!(list.len(), 0);
         assert!(list.is_empty());
+    }
+
+    #[test]
+    fn test_pool_reuse() {
+        let mut pool = Pool::new();
+        let mut list = List::new();
+
+        let p1 = list.push_back(1, &mut pool);
+        let p2 = list.push_back(2, &mut pool);
+
+        list.remove(p1, &mut pool);
+        list.remove(p2, &mut pool);
+        assert!(!pool.free.is_null());
+
+        // Pool reuses freed nodes for new allocations
+        let _p3 = list.push_back(3, &mut pool);
+        let _p4 = list.push_back(4, &mut pool);
+        assert!(pool.free.is_null());
+
+        assert_eq!(list.len(), 2);
+        let vec: Vec<&i32> = list.iter().collect();
+        assert_eq!(vec, vec![&3, &4]);
     }
 }

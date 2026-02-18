@@ -1,5 +1,5 @@
 use crate::{
-    list::{Iter, IterMut, List, Node},
+    list::{Iter, IterMut, List, Node, Pool},
     order::OrderInterface,
 };
 
@@ -43,29 +43,35 @@ impl<O: OrderInterface> Level<O> {
 
     /// Adds an order to this level (FIFO). Returns pointer to the inserted node.
     #[inline(always)]
-    pub fn add_order(&mut self, order: O) -> *mut Node<O> {
+    pub fn add_order(&mut self, order: O, pool: &mut Pool<O>) -> *mut Node<O> {
         self.total_quantity += order.remaining();
-        self.orders.push_back(order)
+        self.orders.push_back(order, pool)
     }
 
     /// Fills an order and returns true if fully filled.
     #[inline(always)]
-    pub fn fill_order(&mut self, node_ptr: *mut Node<O>, order: &mut O, fill: O::N) -> bool {
+    pub fn fill_order(
+        &mut self,
+        node_ptr: *mut Node<O>,
+        order: &mut O,
+        fill: O::N,
+        pool: &mut Pool<O>,
+    ) -> bool {
         order.fill(fill);
         self.total_quantity -= fill;
         if order.remaining() == O::N::default() {
-            let _ = self.orders.remove_unchecked(node_ptr);
+            let _ = self.orders.remove_unchecked(node_ptr, pool);
             return true;
         }
         false
     }
 
     #[inline(always)]
-    pub fn remove_order(&mut self, node_ptr: *mut Node<O>) {
+    pub fn remove_order(&mut self, node_ptr: *mut Node<O>, pool: &mut Pool<O>) {
         if node_ptr.is_null() {
             return;
         }
-        let order = self.orders.remove_unchecked(node_ptr);
+        let order = self.orders.remove_unchecked(node_ptr, pool);
         self.total_quantity -= order.remaining();
     }
 
@@ -97,7 +103,8 @@ mod tests {
     #[test]
     fn test_add_order() {
         let mut level = Level::<TestOrder>::new(100);
-        level.add_order(TestOrder::new("1", true, 100, 50));
+        let mut pool = Pool::new();
+        level.add_order(TestOrder::new("1", true, 100, 50), &mut pool);
         assert_eq!(level.total_quantity(), 50);
         assert_eq!(level.len(), 1);
         assert!(!level.is_empty());
@@ -106,9 +113,10 @@ mod tests {
     #[test]
     fn test_add_multiple_orders() {
         let mut level = Level::<TestOrder>::new(100);
-        level.add_order(TestOrder::new("1", true, 100, 50));
-        level.add_order(TestOrder::new("2", true, 100, 30));
-        level.add_order(TestOrder::new("3", true, 100, 20));
+        let mut pool = Pool::new();
+        level.add_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        level.add_order(TestOrder::new("2", true, 100, 30), &mut pool);
+        level.add_order(TestOrder::new("3", true, 100, 20), &mut pool);
         assert_eq!(level.total_quantity(), 100);
         assert_eq!(level.len(), 3);
     }
@@ -116,10 +124,11 @@ mod tests {
     #[test]
     fn test_remove_order() {
         let mut level = Level::<TestOrder>::new(100);
-        level.add_order(TestOrder::new("1", true, 100, 50));
-        let node_ptr = level.add_order(TestOrder::new("2", true, 100, 30));
-        level.add_order(TestOrder::new("3", true, 100, 20));
-        level.remove_order(node_ptr);
+        let mut pool = Pool::new();
+        level.add_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        let node_ptr = level.add_order(TestOrder::new("2", true, 100, 30), &mut pool);
+        level.add_order(TestOrder::new("3", true, 100, 20), &mut pool);
+        level.remove_order(node_ptr, &mut pool);
         assert_eq!(level.total_quantity(), 70);
         assert_eq!(level.len(), 2);
     }
@@ -127,8 +136,9 @@ mod tests {
     #[test]
     fn test_remove_nonexistent_order() {
         let mut level = Level::<TestOrder>::new(100);
-        level.add_order(TestOrder::new("1", true, 100, 50));
-        level.remove_order(std::ptr::null_mut());
+        let mut pool = Pool::new();
+        level.add_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        level.remove_order(std::ptr::null_mut(), &mut pool);
         assert_eq!(level.total_quantity(), 50);
         assert_eq!(level.len(), 1);
     }
@@ -136,9 +146,10 @@ mod tests {
     #[test]
     fn test_iter() {
         let mut level = Level::<TestOrder>::new(100);
-        level.add_order(TestOrder::new("1", true, 100, 50));
-        level.add_order(TestOrder::new("2", true, 100, 30));
-        level.add_order(TestOrder::new("3", true, 100, 20));
+        let mut pool = Pool::new();
+        level.add_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        level.add_order(TestOrder::new("2", true, 100, 30), &mut pool);
+        level.add_order(TestOrder::new("3", true, 100, 20), &mut pool);
 
         let ids: Vec<&String> = level.iter().map(|o| o.id()).collect();
         assert_eq!(ids, vec!["1", "2", "3"]);
@@ -147,8 +158,9 @@ mod tests {
     #[test]
     fn test_iter_mut() {
         let mut level = Level::<TestOrder>::new(100);
-        level.add_order(TestOrder::new("1", true, 100, 50));
-        level.add_order(TestOrder::new("2", true, 100, 30));
+        let mut pool = Pool::new();
+        level.add_order(TestOrder::new("1", true, 100, 50), &mut pool);
+        level.add_order(TestOrder::new("2", true, 100, 30), &mut pool);
 
         let count = level.iter_mut().count();
         assert_eq!(count, 2);
@@ -157,9 +169,10 @@ mod tests {
     #[test]
     fn test_fill_order_partial() {
         let mut level = Level::<TestOrder>::new(100);
-        let node_ptr = level.add_order(TestOrder::new("1", true, 100, 100));
+        let mut pool = Pool::new();
+        let node_ptr = level.add_order(TestOrder::new("1", true, 100, 100), &mut pool);
         let order = unsafe { &mut (*node_ptr).data };
-        let removed = level.fill_order(node_ptr, order, 30);
+        let removed = level.fill_order(node_ptr, order, 30, &mut pool);
         assert!(!removed);
         assert_eq!(level.total_quantity(), 70);
         assert_eq!(level.len(), 1);
@@ -168,9 +181,10 @@ mod tests {
     #[test]
     fn test_fill_order_complete() {
         let mut level = Level::<TestOrder>::new(100);
-        let node_ptr = level.add_order(TestOrder::new("1", true, 100, 100));
+        let mut pool = Pool::new();
+        let node_ptr = level.add_order(TestOrder::new("1", true, 100, 100), &mut pool);
         let order = unsafe { &mut (*node_ptr).data };
-        let removed = level.fill_order(node_ptr, order, 100);
+        let removed = level.fill_order(node_ptr, order, 100, &mut pool);
         assert!(removed);
         assert_eq!(level.total_quantity(), 0);
         assert_eq!(level.len(), 0);
