@@ -223,7 +223,7 @@ impl<O: OrderInterface> OrderBook<O> {
 mod tests {
     use super::*;
     use crate::eval::{Evaluator, Instruction, Msg, Op};
-    use crate::order::{TestOrder, STP, TIF};
+    use crate::order::{STP, TIF, TestOrder};
 
     fn setup_order(ob: &mut OrderBook<TestOrder>, id: &str, is_buy: bool, price: u64, qty: u64) {
         let order = TestOrder::new(id, is_buy, price, qty);
@@ -423,7 +423,10 @@ mod tests {
         setup_order(&mut ob, "1", true, 1000, 100);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Delete(String::from("1"))]);
-        assert_eq!(i[0], Instruction::Delete((String::from("1"), Msg::Cancelled), None));
+        assert_eq!(
+            i[0],
+            Instruction::Delete((String::from("1"), Msg::UserCancelled), None)
+        );
     }
 
     #[test]
@@ -604,17 +607,26 @@ mod tests {
     fn test_apply_delete() {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", true, 1000, 100);
-        ob.apply(vec![Instruction::Delete((String::from("1"), Msg::Cancelled), None)]);
+        ob.apply(vec![Instruction::Delete(
+            (String::from("1"), Msg::UserCancelled),
+            None,
+        )]);
         assert!(ob.bids.is_empty());
 
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", false, 1000, 100);
-        ob.apply(vec![Instruction::Delete((String::from("1"), Msg::Cancelled), None)]);
+        ob.apply(vec![Instruction::Delete(
+            (String::from("1"), Msg::UserCancelled),
+            None,
+        )]);
         assert!(ob.asks.is_empty());
 
         // Non-existent (no panic)
         let mut ob = OrderBook::<TestOrder>::default();
-        ob.apply(vec![Instruction::Delete((String::from("x"), Msg::OrderNotFound), None)]);
+        ob.apply(vec![Instruction::Delete(
+            (String::from("x"), Msg::OrderNotFound),
+            None,
+        )]);
     }
 
     #[test]
@@ -772,7 +784,10 @@ mod tests {
         let i = eval.eval(&ob, vec![Op::Insert(order)]);
         // IOC with no liquidity: one Delete (reject)
         assert_eq!(i.len(), 1);
-        assert_eq!(i[0], Instruction::Delete((String::from("b1"), Msg::IOCNoFill), None));
+        assert_eq!(
+            i[0],
+            Instruction::Delete((String::from("b1"), Msg::IOCNoFill), None)
+        );
     }
 
     #[test]
@@ -799,7 +814,7 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Delete((String::from("b1"), Msg::PostOnlyWouldTake), None)
+            Instruction::Delete((String::from("b1"), Msg::PostOnlyFilled), None)
         );
     }
 
@@ -908,7 +923,7 @@ mod tests {
             i[0],
             Instruction::Delete(
                 (String::from("b1"), Msg::StpCancelTaker),
-                Some((String::from("s1"), Msg::Cancelled)),
+                Some((String::from("s1"), Msg::StpCancelBoth)),
             )
         );
         let mut ob2 = OrderBook::<TestOrder>::default();

@@ -1,3 +1,11 @@
+//! Eval: compute instructions from ops without mutating the book.
+//!
+//! - **Batch**: `eval(ob, [op1, op2, ...])` returns one instruction per op. The book `ob` is read-only.
+//!   Later ops in the same batch "see" earlier effects via `temp`: we track virtual remaining qty
+//!   for orders that were matched or cancelled by earlier ops, so we don't double-fill or match
+//!   against already-cancelled orders.
+//! - **Apply** (in `ob`) takes the instructions and mutates the book; call it after eval.
+
 use crate::{
     hash::FxHashMap,
     ob::OrderBook,
@@ -13,18 +21,22 @@ pub enum Op<O: OrderInterface> {
 #[derive(Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Msg {
+    // Order not found on the book.
     OrderNotFound,
+    // Order already exists on the book.
     OrderAlreadyExists,
-    /// Post-only order would have crossed the spread (would take).
-    PostOnlyWouldTake,
+    /// Order was successfully cancelled (removed from book or rejected).
+    UserCancelled,
+    /// Post-only order would have crossed the spread (would fill).
+    PostOnlyFilled,
     /// FOK order could not be fully filled.
     FOKNotFilled,
     /// IOC order had no match (nothing to do).
     IOCNoFill,
     /// STP CancelTaker: incoming order would match same-owner maker(s), taker cancelled.
     StpCancelTaker,
-    /// Order was successfully cancelled (removed from book or rejected).
-    Cancelled,
+    /// STP CancelBoth: incoming order would match same-owner maker(s), both taker and maker(s) cancelled.
+    StpCancelBoth,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -37,7 +49,8 @@ pub enum Instruction<O: OrderInterface> {
     Match(O, O::N, Vec<(O::T, O::N)>, Vec<O::T>),
 }
 
-/// Evaluator for computing orderbook operations without mutating state.
+/// Evaluator: turns ops into instructions without mutating the book.
+/// `temp`: order id → virtual remaining qty for this batch (filled/cancelled by earlier ops).
 pub struct Evaluator<O: OrderInterface> {
     temp: FxHashMap<O::T, O::N>,
 }
@@ -57,8 +70,8 @@ impl<O: OrderInterface> Evaluator<O> {
         self.temp.clear();
     }
 
-    /// Evaluates a batch of operations against the orderbook without mutating it.
-    /// Returns one instruction per op.
+    /// Evaluates a batch of ops; returns one instruction per op. Does not mutate `ob`.
+    /// Uses `temp` so each op sees the effect of previous ops in the batch (e.g. maker qty already taken).
     #[inline]
     pub fn eval(&mut self, ob: &OrderBook<O>, ops: Vec<Op<O>>) -> Vec<Instruction<O>> {
         let mut instructions = Vec::new();
@@ -78,8 +91,11 @@ impl<O: OrderInterface> Evaluator<O> {
         self.eval_insert_inner(ob, order)
     }
 
+    /// Inserts an incoming order: reject if duplicate, else walk opposite side and compute
+    /// matches (and any STP cancels). Returns Insert / Match / Delete(reject) without mutating the book.
     #[inline(always)]
     fn eval_insert_inner(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
+        // Reject if order id already on book.
         if ob.orders.contains_key(order.id()) {
             return Instruction::Delete((order.id().clone(), Msg::OrderAlreadyExists), None);
         }
@@ -93,9 +109,11 @@ impl<O: OrderInterface> Evaluator<O> {
         let opposite_side = if is_buy { &ob.asks } else { &ob.bids };
 
         let mut remaining_quantity = order.remaining();
-        let mut maker_matches = Vec::new();
-        let mut cancel_maker_ids = Vec::new();
+        let mut maker_matches = Vec::new(); // (maker_id, qty) for each fill
+        let mut cancel_maker_ids = Vec::new(); // same-owner makers to cancel (STP CancelMaker)
 
+        // --- Matching loop: opposite side, best price first, FIFO within level ---
+        // Stop when taker is filled (remaining_quantity == 0) or we leave the book (dominated).
         'outer: for level in opposite_side.iter() {
             let dominated = is_buy && price < level.price() || !is_buy && price > level.price();
             if dominated {
@@ -105,6 +123,7 @@ impl<O: OrderInterface> Evaluator<O> {
                 if remaining_quantity == O::N::default() {
                     break 'outer;
                 }
+                // Maker's available qty: from temp (if reduced by earlier ops in batch) else from book.
                 let maker_remaining = *self
                     .temp
                     .get(resting_order.id())
@@ -116,10 +135,12 @@ impl<O: OrderInterface> Evaluator<O> {
                 let same_owner = taker_owner == resting_order.owner();
 
                 if post_only && taken_quantity > O::N::default() {
-                    return Instruction::Delete((order.id().clone(), Msg::PostOnlyWouldTake), None);
+                    return Instruction::Delete((order.id().clone(), Msg::PostOnlyFilled), None);
                 }
 
-                // Same-owner: STP may reject taker, cancel maker(s), or skip fill
+                // STP: same-owner → don't take from this maker (or reject taker / cancel both).
+                // CancelMaker: record maker for cancel, skip fill. CancelBoth: reject taker + cancel this maker, return now.
+                // CancelTaker: if we would take from same-owner, reject taker and return.
                 let take_from_maker = !same_owner || matches!(stp, STP::None | STP::CancelTaker);
                 if !take_from_maker {
                     if same_owner {
@@ -131,8 +152,8 @@ impl<O: OrderInterface> Evaluator<O> {
                             self.temp
                                 .insert(resting_order.id().clone(), O::N::default());
                             return Instruction::Delete(
-                                (order.id().clone(), Msg::StpCancelTaker),
-                                Some((resting_order.id().clone(), Msg::Cancelled)),
+                                (order.id().clone(), Msg::StpCancelBoth),
+                                Some((resting_order.id().clone(), Msg::StpCancelBoth)),
                             );
                         }
                     }
@@ -150,6 +171,7 @@ impl<O: OrderInterface> Evaluator<O> {
             return Instruction::Delete((order.id().clone(), Msg::FOKNotFilled), None);
         }
 
+        // Record fills in temp so later ops in this batch see reduced maker qty.
         for (maker_id, taken_quantity) in &maker_matches {
             let remaining = self.temp.get(maker_id).copied().unwrap_or_else(|| {
                 ob.order(maker_id)
@@ -160,6 +182,7 @@ impl<O: OrderInterface> Evaluator<O> {
                 .insert(maker_id.clone(), remaining - *taken_quantity);
         }
 
+        // Emit instruction: Match (if any fill or STP CancelMaker), else Insert or IOC no-fill reject.
         let has_match_or_cancel = !maker_matches.is_empty() || !cancel_maker_ids.is_empty();
         let remaining = if tif == TIF::IOC {
             O::N::default()
@@ -187,7 +210,7 @@ impl<O: OrderInterface> Evaluator<O> {
         if !ob.orders.contains_key(&order_id) {
             return Instruction::Delete((order_id, Msg::OrderNotFound), None);
         }
-        self.temp.insert(order_id.clone(), O::N::default());
-        Instruction::Delete((order_id, Msg::Cancelled), None)
+        self.temp.insert(order_id.clone(), O::N::default()); // later ops in batch treat as gone
+        Instruction::Delete((order_id, Msg::UserCancelled), None)
     }
 }
