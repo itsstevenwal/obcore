@@ -4,6 +4,18 @@ use std::{
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
+/// Time in force for an order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimeInForce {
+    /// Fill entire order immediately or cancel (no resting quantity).
+    FOK,
+    /// Fill as much as possible immediately, cancel the rest (no resting quantity).
+    IOC,
+    /// Good till cancelled; remainder rests on the book.
+    #[default]
+    GTC,
+}
+
 /// Trait defining the interface for orders in the orderbook.
 /// T: Order identifier type (must be unique). N: Numeric type.
 pub trait OrderInterface {
@@ -35,6 +47,16 @@ pub trait OrderInterface {
 
     /// Fill the order, updating remaining quantity.
     fn fill(&mut self, quantity: Self::N);
+
+    /// Time in force: FOK, IOC, or GTC. Default is GTC.
+    fn tif(&self) -> TimeInForce {
+        TimeInForce::GTC
+    }
+
+    /// If true, order must not take; it is rejected if it would cross the spread.
+    fn post_only(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -45,6 +67,8 @@ pub struct TestOrder {
     price: u64,
     quantity: u64,
     remaining: u64,
+    tif: TimeInForce,
+    post_only: bool,
 }
 
 #[cfg(test)]
@@ -56,7 +80,19 @@ impl TestOrder {
             price,
             quantity,
             remaining: quantity,
+            tif: TimeInForce::GTC,
+            post_only: false,
         }
+    }
+
+    pub fn with_tif(mut self, tif: TimeInForce) -> Self {
+        self.tif = tif;
+        self
+    }
+
+    pub fn with_post_only(mut self, post_only: bool) -> Self {
+        self.post_only = post_only;
+        self
     }
 }
 
@@ -87,5 +123,13 @@ impl OrderInterface for TestOrder {
 
     fn fill(&mut self, quantity: u64) {
         self.remaining -= quantity;
+    }
+
+    fn tif(&self) -> TimeInForce {
+        self.tif
+    }
+
+    fn post_only(&self) -> bool {
+        self.post_only
     }
 }

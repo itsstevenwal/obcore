@@ -81,7 +81,6 @@ fn bench_eval_insert(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
 
     let mut eval = Evaluator::default();
-    let mut instructions: Vec<Instruction<BenchOrder>> = Vec::with_capacity(16);
     group.bench_function("empty", |b| {
         b.iter_batched_ref(
             || {
@@ -91,16 +90,13 @@ fn bench_eval_insert(c: &mut Criterion) {
             },
             |(ob, order)| {
                 eval.reset();
-                instructions.clear();
-                eval.eval_insert(ob, black_box(order.take().unwrap()), &mut instructions);
-                black_box(instructions.len())
+                black_box(eval.eval_insert(ob, black_box(order.take().unwrap())))
             },
             BatchSize::LargeInput,
         );
     });
 
     let mut eval = Evaluator::default();
-    let mut instructions: Vec<Instruction<BenchOrder>> = Vec::with_capacity(16);
     group.bench_function("depth_100", |b| {
         b.iter_batched_ref(
             || {
@@ -110,16 +106,13 @@ fn bench_eval_insert(c: &mut Criterion) {
             },
             |(ob, order)| {
                 eval.reset();
-                instructions.clear();
-                eval.eval_insert(ob, black_box(order.take().unwrap()), &mut instructions);
-                black_box(instructions.len())
+                black_box(eval.eval_insert(ob, black_box(order.take().unwrap())))
             },
             BatchSize::LargeInput,
         );
     });
 
     let mut eval = Evaluator::default();
-    let mut instructions: Vec<Instruction<BenchOrder>> = Vec::with_capacity(16);
     group.bench_function("depth_1000", |b| {
         b.iter_batched_ref(
             || {
@@ -129,9 +122,7 @@ fn bench_eval_insert(c: &mut Criterion) {
             },
             |(ob, order)| {
                 eval.reset();
-                instructions.clear();
-                eval.eval_insert(ob, black_box(order.take().unwrap()), &mut instructions);
-                black_box(instructions.len())
+                black_box(eval.eval_insert(ob, black_box(order.take().unwrap())))
             },
             BatchSize::LargeInput,
         );
@@ -196,7 +187,6 @@ fn bench_eval_cancel(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
 
     let mut eval = Evaluator::default();
-    let mut instructions: Vec<Instruction<BenchOrder>> = Vec::with_capacity(16);
     group.bench_function("single", |b| {
         b.iter_batched_ref(
             || {
@@ -209,16 +199,13 @@ fn bench_eval_cancel(c: &mut Criterion) {
             },
             |(ob, order_id)| {
                 eval.reset();
-                instructions.clear();
-                eval.eval_cancel(ob, black_box(*order_id), &mut instructions);
-                black_box(instructions.len())
+                black_box(eval.eval_cancel(ob, black_box(*order_id)))
             },
             BatchSize::LargeInput,
         );
     });
 
     let mut eval = Evaluator::default();
-    let mut instructions: Vec<Instruction<BenchOrder>> = Vec::with_capacity(16);
     group.bench_function("depth_100", |b| {
         b.iter_batched_ref(
             || {
@@ -227,16 +214,13 @@ fn bench_eval_cancel(c: &mut Criterion) {
             },
             |(ob, order_id)| {
                 eval.reset();
-                instructions.clear();
-                eval.eval_cancel(ob, black_box(*order_id), &mut instructions);
-                black_box(instructions.len())
+                black_box(eval.eval_cancel(ob, black_box(*order_id)))
             },
             BatchSize::LargeInput,
         );
     });
 
     let mut eval = Evaluator::default();
-    let mut instructions: Vec<Instruction<BenchOrder>> = Vec::with_capacity(16);
     group.bench_function("depth_1000", |b| {
         b.iter_batched_ref(
             || {
@@ -245,9 +229,7 @@ fn bench_eval_cancel(c: &mut Criterion) {
             },
             |(ob, order_id)| {
                 eval.reset();
-                instructions.clear();
-                eval.eval_cancel(ob, black_box(*order_id), &mut instructions);
-                black_box(instructions.len())
+                black_box(eval.eval_cancel(ob, black_box(*order_id)))
             },
             BatchSize::LargeInput,
         );
@@ -307,7 +289,6 @@ fn bench_eval_match(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
 
     let mut eval = Evaluator::default();
-    let mut instructions: Vec<Instruction<BenchOrder>> = Vec::with_capacity(16);
     group.bench_function("1_level", |b| {
         b.iter_batched_ref(
             || {
@@ -321,16 +302,13 @@ fn bench_eval_match(c: &mut Criterion) {
             },
             |(ob, buy)| {
                 eval.reset();
-                instructions.clear();
-                eval.eval_insert(ob, black_box(buy.take().unwrap()), &mut instructions);
-                black_box(instructions.len())
+                black_box(eval.eval_insert(ob, black_box(buy.take().unwrap())))
             },
             BatchSize::LargeInput,
         );
     });
 
     let mut eval = Evaluator::default();
-    let mut instructions: Vec<Instruction<BenchOrder>> = Vec::with_capacity(16);
     group.bench_function("5_levels", |b| {
         b.iter_batched_ref(
             || {
@@ -346,16 +324,13 @@ fn bench_eval_match(c: &mut Criterion) {
             },
             |(ob, buy)| {
                 eval.reset();
-                instructions.clear();
-                eval.eval_insert(ob, black_box(buy.take().unwrap()), &mut instructions);
-                black_box(instructions.len())
+                black_box(eval.eval_insert(ob, black_box(buy.take().unwrap())))
             },
             BatchSize::LargeInput,
         );
     });
 
     let mut eval = Evaluator::default();
-    let mut instructions: Vec<Instruction<BenchOrder>> = Vec::with_capacity(16);
     group.bench_function("10_levels", |b| {
         b.iter_batched_ref(
             || {
@@ -371,9 +346,7 @@ fn bench_eval_match(c: &mut Criterion) {
             },
             |(ob, buy)| {
                 eval.reset();
-                instructions.clear();
-                eval.eval_insert(ob, black_box(buy.take().unwrap()), &mut instructions);
-                black_box(instructions.len())
+                black_box(eval.eval_insert(ob, black_box(buy.take().unwrap())))
             },
             BatchSize::LargeInput,
         );

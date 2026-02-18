@@ -1,4 +1,8 @@
-use crate::{hash::FxHashMap, ob::OrderBook, order::OrderInterface};
+use crate::{
+    hash::FxHashMap,
+    ob::OrderBook,
+    order::{OrderInterface, TimeInForce},
+};
 
 /// An operation to apply to the orderbook.
 pub enum Op<O: OrderInterface> {
@@ -11,6 +15,12 @@ pub enum Op<O: OrderInterface> {
 pub enum Msg {
     OrderNotFound,
     OrderAlreadyExists,
+    /// Post-only order would have crossed the spread (would take).
+    PostOnlyWouldTake,
+    /// FOK order could not be fully filled.
+    FOKNotFilled,
+    /// IOC order had no match (nothing to do).
+    IOCNoFill,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -19,8 +29,8 @@ pub enum Instruction<O: OrderInterface> {
     Insert(O, O::N),
     // (Order ID)
     Delete(O::T),
-    // (Taker ID, [(Maker ID, Maker Quantity), ...])
-    Match(O::T, Vec<(O::T, O::N)>),
+    // (Taker order, remaining, makers). Apply inserts the order when remaining > 0.
+    Match(O, O::N, Vec<(O::T, O::N)>),
     // (Order ID, Message)
     NoOp(O::T, Msg),
 }
@@ -46,49 +56,34 @@ impl<O: OrderInterface> Evaluator<O> {
     }
 
     /// Evaluates a batch of operations against the orderbook without mutating it.
-    /// Returns matches and instructions that can later be applied.
+    /// Returns one instruction per op.
     #[inline]
     pub fn eval(&mut self, ob: &OrderBook<O>, ops: Vec<Op<O>>) -> Vec<Instruction<O>> {
         let mut instructions = Vec::new();
         for op in ops {
             match op {
-                Op::Insert(order) => {
-                    self.eval_insert_inner(ob, order, &mut instructions);
-                }
-                Op::Delete(order_id) => {
-                    self.eval_cancel_inner(ob, order_id, &mut instructions);
-                }
+                Op::Insert(order) => instructions.push(self.eval_insert_inner(ob, order)),
+                Op::Delete(order_id) => instructions.push(self.eval_cancel_inner(ob, order_id)),
             }
         }
-
         instructions
     }
 
     /// Evaluates a single insert operation. Only available with the `bench` feature.
     #[cfg(feature = "bench")]
     #[inline(always)]
-    pub fn eval_insert(
-        &mut self,
-        ob: &OrderBook<O>,
-        order: O,
-        instructions: &mut Vec<Instruction<O>>,
-    ) {
-        self.eval_insert_inner(ob, order, instructions);
+    pub fn eval_insert(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
+        self.eval_insert_inner(ob, order)
     }
 
     #[inline(always)]
-    fn eval_insert_inner(
-        &mut self,
-        ob: &OrderBook<O>,
-        order: O,
-        instructions: &mut Vec<Instruction<O>>,
-    ) {
+    fn eval_insert_inner(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
         if ob.orders.contains_key(order.id()) {
-            instructions.push(Instruction::NoOp(
-                order.id().clone(),
-                Msg::OrderAlreadyExists,
-            ));
+            return Instruction::NoOp(order.id().clone(), Msg::OrderAlreadyExists);
         }
+
+        let tif = order.tif();
+        let post_only = order.post_only();
 
         let mut remaining_quantity = order.remaining();
         let mut maker_matches = Vec::new();
@@ -98,6 +93,7 @@ impl<O: OrderInterface> Evaluator<O> {
 
         let opposite_side = if is_buy { &ob.asks } else { &ob.bids };
 
+        // Compute matches without updating temp yet (so we can reject post_only / FOK without side effects)
         'outer: for level in opposite_side.iter() {
             let dominated = if is_buy {
                 price < level.price()
@@ -121,47 +117,59 @@ impl<O: OrderInterface> Evaluator<O> {
                 }
                 let taken_quantity = remaining_quantity.min(remaining);
                 remaining_quantity -= taken_quantity;
-                self.temp
-                    .insert(resting_order.id().clone(), remaining - taken_quantity);
-
                 maker_matches.push((resting_order.id().clone(), taken_quantity));
             }
         }
 
-        let taker_id = order.id().clone();
-        if !maker_matches.is_empty() {
-            instructions.push(Instruction::Match(taker_id, maker_matches));
+        if post_only && !maker_matches.is_empty() {
+            return Instruction::NoOp(order.id().clone(), Msg::PostOnlyWouldTake);
         }
 
-        if remaining_quantity > O::N::default() {
-            instructions.push(Instruction::Insert(order, remaining_quantity));
+        if tif == TimeInForce::FOK && remaining_quantity > O::N::default() {
+            return Instruction::NoOp(order.id().clone(), Msg::FOKNotFilled);
         }
+
+        // Apply maker quantity updates for subsequent ops in the batch
+        for (maker_id, taken_quantity) in &maker_matches {
+            let remaining = self.temp.get(maker_id).copied().unwrap_or_else(|| {
+                ob.order(maker_id)
+                    .map(|o| o.remaining())
+                    .unwrap_or(O::N::default())
+            });
+            self.temp
+                .insert(maker_id.clone(), remaining - *taken_quantity);
+        }
+
+        if !maker_matches.is_empty() {
+            // IOC: set remaining to 0 so apply does not insert the unfilled portion
+            let remaining = if tif == TimeInForce::IOC {
+                O::N::default()
+            } else {
+                remaining_quantity
+            };
+            return Instruction::Match(order, remaining, maker_matches);
+        }
+
+        if tif == TimeInForce::IOC {
+            return Instruction::NoOp(order.id().clone(), Msg::IOCNoFill);
+        }
+
+        Instruction::Insert(order, remaining_quantity)
     }
 
     /// Evaluates a single cancel operation. Only available with the `bench` feature.
     #[cfg(feature = "bench")]
     #[inline(always)]
-    pub fn eval_cancel(
-        &mut self,
-        ob: &OrderBook<O>,
-        order_id: O::T,
-        instructions: &mut Vec<Instruction<O>>,
-    ) {
-        self.eval_cancel_inner(ob, order_id, instructions);
+    pub fn eval_cancel(&mut self, ob: &OrderBook<O>, order_id: O::T) -> Instruction<O> {
+        self.eval_cancel_inner(ob, order_id)
     }
 
     #[inline(always)]
-    fn eval_cancel_inner(
-        &mut self,
-        ob: &OrderBook<O>,
-        order_id: O::T,
-        instructions: &mut Vec<Instruction<O>>,
-    ) {
+    fn eval_cancel_inner(&mut self, ob: &OrderBook<O>, order_id: O::T) -> Instruction<O> {
         if !ob.orders.contains_key(&order_id) {
-            instructions.push(Instruction::NoOp(order_id, Msg::OrderNotFound));
-            return;
+            return Instruction::NoOp(order_id, Msg::OrderNotFound);
         }
         self.temp.insert(order_id.clone(), O::N::default());
-        instructions.push(Instruction::Delete(order_id));
+        Instruction::Delete(order_id)
     }
 }

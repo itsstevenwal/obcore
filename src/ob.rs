@@ -142,8 +142,13 @@ impl<O: OrderInterface> OrderBook<O> {
             let output = match instruction {
                 Instruction::Insert(order, remaining) => self.apply_insert_inner(order, remaining),
                 Instruction::Delete(order_id) => self.apply_delete_inner(order_id),
-                Instruction::Match(taker_id, maker_matches) => {
-                    self.apply_match_inner(taker_id, maker_matches)
+                Instruction::Match(order, remaining, maker_matches) => {
+                    let taker_id = order.id().clone();
+                    let mut out = self.apply_match_inner(taker_id, maker_matches);
+                    if remaining > O::N::default() {
+                        out.extend(self.apply_insert_inner(order, remaining));
+                    }
+                    out
                 }
                 Instruction::NoOp(order_id, _) => vec![(order_id, O::N::default())],
             };
@@ -209,8 +214,8 @@ impl<O: OrderInterface> OrderBook<O> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::{Evaluator, Msg, Op};
-    use crate::order::TestOrder;
+    use crate::eval::{Evaluator, Instruction, Msg, Op};
+    use crate::order::{TestOrder, TimeInForce};
 
     fn setup_order(ob: &mut OrderBook<TestOrder>, id: &str, is_buy: bool, price: u64, qty: u64) {
         let order = TestOrder::new(id, is_buy, price, qty);
@@ -404,13 +409,14 @@ mod tests {
     fn test_eval_matching() {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "s1", false, 1000, 100);
+        let order = TestOrder::new("b1", true, 1000, 100);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, vec![Op::Insert(TestOrder::new("b1", true, 1000, 100))]);
+        let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
         // One Match (taker b1, maker s1)
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Match(String::from("b1"), vec![(String::from("s1"), 100)])
+            Instruction::Match(order, 0, vec![(String::from("s1"), 100)])
         );
 
         let mut ob = OrderBook::<TestOrder>::default();
@@ -418,13 +424,12 @@ mod tests {
         let order = TestOrder::new("b1", true, 1000, 100);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
-        // One Match then insert remainder
-        assert_eq!(i.len(), 2);
+        // One Match with remaining (apply will insert)
+        assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Match(String::from("b1"), vec![(String::from("s1"), 50)])
+            Instruction::Match(order, 50, vec![(String::from("s1"), 50)],)
         );
-        assert_eq!(i[1], Instruction::Insert(order, 50));
     }
 
     #[test]
@@ -442,10 +447,11 @@ mod tests {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "s1", false, 1000, 100);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, vec![Op::Insert(TestOrder::new("b1", true, 1100, 100))]);
+        let order = TestOrder::new("b1", true, 1100, 100);
+        let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
         assert_eq!(
             i[0],
-            Instruction::Match(String::from("b1"), vec![(String::from("s1"), 100)])
+            Instruction::Match(order, 0, vec![(String::from("s1"), 100)])
         );
 
         // Sell doesn't match lower buy
@@ -463,14 +469,12 @@ mod tests {
         // Sell at lower price matches higher buy
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "b1", true, 1100, 100);
+        let order = TestOrder::new("s1", false, 1000, 100);
         let mut eval = Evaluator::default();
-        let i = eval.eval(
-            &ob,
-            vec![Op::Insert(TestOrder::new("s1", false, 1000, 100))],
-        );
+        let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
         assert_eq!(
             i[0],
-            Instruction::Match(String::from("s1"), vec![(String::from("b1"), 100)])
+            Instruction::Match(order, 0, vec![(String::from("b1"), 100)])
         );
     }
 
@@ -484,8 +488,9 @@ mod tests {
             &ob,
             vec![Op::Insert(TestOrder::new("s1", false, 1000, 100))],
         );
-        // 1 Match (s1 vs b1 30, b2 40) + 1 insert for remaining 30
-        assert_eq!(i.len(), 2);
+        // 1 Match (s1 vs b1 30, b2 40) with remaining 30 (apply will insert)
+        assert_eq!(i.len(), 1);
+        assert!(matches!(&i[0], Instruction::Match(_, 30, _)));
     }
 
     #[test]
@@ -541,7 +546,7 @@ mod tests {
         // b3: insert (no match since s1 was deleted in temp state)
         let matches: Vec<_> = i
             .iter()
-            .filter(|instr| matches!(instr, Instruction::Match(_, v) if !v.is_empty()))
+            .filter(|instr| matches!(instr, Instruction::Match(_, _, v) if !v.is_empty()))
             .collect();
         assert_eq!(matches.len(), 2); // b1 and b2 matched
     }
@@ -596,8 +601,10 @@ mod tests {
         // Partial fill sell (taker "t1", maker "1" filled 30)
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", false, 1000, 100);
+        let t1 = TestOrder::new("t1", true, 1000, 100);
         ob.apply(vec![Instruction::Match(
-            String::from("t1"),
+            t1,
+            70,
             vec![(String::from("1"), 30)],
         )]);
         assert_eq!(ob.order(&String::from("1")).unwrap().remaining(), 70);
@@ -605,8 +612,10 @@ mod tests {
         // Complete fill sell
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", false, 1000, 100);
+        let t1 = TestOrder::new("t1", true, 1000, 100);
         ob.apply(vec![Instruction::Match(
-            String::from("t1"),
+            t1,
+            0,
             vec![(String::from("1"), 100)],
         )]);
         assert!(ob.asks.is_empty());
@@ -614,8 +623,10 @@ mod tests {
         // Partial fill buy
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", true, 1000, 100);
+        let t1 = TestOrder::new("t1", false, 1000, 100);
         ob.apply(vec![Instruction::Match(
-            String::from("t1"),
+            t1,
+            70,
             vec![(String::from("1"), 30)],
         )]);
         assert_eq!(ob.order(&String::from("1")).unwrap().remaining(), 70);
@@ -623,15 +634,18 @@ mod tests {
         // Complete fill buy
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", true, 1000, 100);
+        let t1 = TestOrder::new("t1", false, 1000, 100);
         ob.apply(vec![Instruction::Match(
-            String::from("t1"),
+            t1,
+            0,
             vec![(String::from("1"), 100)],
         )]);
         assert!(ob.bids.is_empty());
 
         // Empty maker list (no panic)
         let mut ob = OrderBook::<TestOrder>::default();
-        ob.apply(vec![Instruction::Match(String::from("x"), vec![])]);
+        let x = TestOrder::new("x", true, 1000, 100);
+        ob.apply(vec![Instruction::Match(x, 0, vec![])]);
     }
 
     #[test]
@@ -657,7 +671,7 @@ mod tests {
         let instructions = eval.eval(&ob, ops);
         // Check there's a Match for b1 with total matched 60
         let taker_match = instructions.iter().find(|i| {
-            matches!(i, Instruction::Match(id, v) if *id == "b1" && v.iter().map(|(_, q)| q).sum::<u64>() == 60)
+            matches!(i, Instruction::Match(o, _, v) if o.id() == "b1" && v.iter().map(|(_, q)| q).sum::<u64>() == 60)
         });
         assert!(taker_match.is_some());
         ob.apply(instructions);
@@ -675,5 +689,103 @@ mod tests {
         ob.apply(instructions);
         assert!(ob.asks.is_empty());
         assert_eq!(ob.order(&String::from("b1")).unwrap().remaining(), 50);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // TIF and post_only tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fok_full_fill() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order(&mut ob, "s1", false, 1000, 100);
+        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TimeInForce::FOK);
+        let mut eval = Evaluator::default();
+        let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
+        // FOK fully filled: one Match
+        assert_eq!(i.len(), 1);
+        assert_eq!(
+            i[0],
+            Instruction::Match(order, 0, vec![(String::from("s1"), 100)])
+        );
+    }
+
+    #[test]
+    fn test_fok_partial_reject() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order(&mut ob, "s1", false, 1000, 50);
+        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TimeInForce::FOK);
+        let mut eval = Evaluator::default();
+        let i = eval.eval(&ob, vec![Op::Insert(order)]);
+        assert_eq!(i.len(), 1);
+        assert_eq!(
+            i[0],
+            Instruction::NoOp(String::from("b1"), Msg::FOKNotFilled)
+        );
+    }
+
+    #[test]
+    fn test_ioc_partial_fill() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order(&mut ob, "s1", false, 1000, 50);
+        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TimeInForce::IOC);
+        let mut eval = Evaluator::default();
+        let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
+        // IOC: Match 50, remaining set to 0 so apply does not insert
+        assert_eq!(i.len(), 1);
+        assert_eq!(
+            i[0],
+            Instruction::Match(order, 0, vec![(String::from("s1"), 50)])
+        );
+    }
+
+    #[test]
+    fn test_ioc_no_match() {
+        let ob = OrderBook::<TestOrder>::default();
+        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TimeInForce::IOC);
+        let mut eval = Evaluator::default();
+        let i = eval.eval(&ob, vec![Op::Insert(order)]);
+        // IOC with no liquidity: one NoOp
+        assert_eq!(i.len(), 1);
+        assert_eq!(i[0], Instruction::NoOp(String::from("b1"), Msg::IOCNoFill));
+    }
+
+    #[test]
+    fn test_gtc_unchanged() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order(&mut ob, "s1", false, 1000, 50);
+        let order = TestOrder::new("b1", true, 1000, 100); // GTC default
+        let mut eval = Evaluator::default();
+        let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
+        assert_eq!(i.len(), 1);
+        assert_eq!(
+            i[0],
+            Instruction::Match(order, 50, vec![(String::from("s1"), 50)],)
+        );
+    }
+
+    #[test]
+    fn test_post_only_reject_if_would_take() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order(&mut ob, "s1", false, 1000, 100);
+        let order = TestOrder::new("b1", true, 1000, 100).with_post_only(true);
+        let mut eval = Evaluator::default();
+        let i = eval.eval(&ob, vec![Op::Insert(order)]);
+        assert_eq!(i.len(), 1);
+        assert_eq!(
+            i[0],
+            Instruction::NoOp(String::from("b1"), Msg::PostOnlyWouldTake)
+        );
+    }
+
+    #[test]
+    fn test_post_only_accept_if_maker() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order(&mut ob, "s1", false, 1100, 100);
+        let order = TestOrder::new("b1", true, 1000, 100).with_post_only(true);
+        let mut eval = Evaluator::default();
+        let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
+        assert_eq!(i.len(), 1);
+        assert_eq!(i[0], Instruction::Insert(order, 100));
     }
 }
