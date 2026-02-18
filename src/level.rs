@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn test_remove_nonexistent_order() {
         let mut level = Level::<TestOrder>::new(100);
-        level.add_order(TestOrder::new("1", true, 50, 50));
+        level.add_order(TestOrder::new("1", true, 100, 50));
         level.remove_order(std::ptr::null_mut());
         assert_eq!(level.total_quantity(), 50);
         assert_eq!(level.len(), 1);
