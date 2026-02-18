@@ -1,7 +1,7 @@
 use crate::{
     hash::FxHashMap,
     ob::OrderBook,
-    order::{OrderInterface, TIF},
+    order::{OrderInterface, STP, TIF},
 };
 
 /// An operation to apply to the orderbook.
@@ -21,18 +21,20 @@ pub enum Msg {
     FOKNotFilled,
     /// IOC order had no match (nothing to do).
     IOCNoFill,
+    /// STP CancelTaker: incoming order would match same-owner maker(s), taker cancelled.
+    StpCancelTaker,
+    /// Order was successfully cancelled (removed from book or rejected).
+    Cancelled,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Instruction<O: OrderInterface> {
     // (Order, Remaining Quantity)
     Insert(O, O::N),
-    // (Order ID)
-    Delete(O::T),
-    // (Taker order, remaining, makers). Apply inserts the order when remaining > 0.
-    Match(O, O::N, Vec<(O::T, O::N)>),
-    // (Order ID, Message)
-    NoOp(O::T, Msg),
+    /// (Order ID, reason) pairs to cancel or reject; apply removes from book when present, always outputs (id, 0).
+    Delete(Vec<(O::T, Msg)>),
+    /// (Taker order, remaining, maker matches, makers to cancel). Apply inserts the order when remaining > 0.
+    Match(O, O::N, Vec<(O::T, O::N)>, Vec<O::T>),
 }
 
 /// Evaluator for computing orderbook operations without mutating state.
@@ -79,14 +81,19 @@ impl<O: OrderInterface> Evaluator<O> {
     #[inline(always)]
     fn eval_insert_inner(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
         if ob.orders.contains_key(order.id()) {
-            return Instruction::NoOp(order.id().clone(), Msg::OrderAlreadyExists);
+            return Instruction::Delete(vec![(order.id().clone(), Msg::OrderAlreadyExists)]);
         }
 
         let tif = order.tif();
         let post_only = order.post_only();
+        let stp = order.stp();
+        let taker_owner = order.owner();
 
         let mut remaining_quantity = order.remaining();
         let mut maker_matches = Vec::new();
+        let mut cancel_maker_ids = Vec::new();
+        let mut cancel_both_makers = Vec::new();
+        let mut cancel_both_triggered = false;
 
         let is_buy = order.is_buy();
         let price = order.price();
@@ -116,16 +123,58 @@ impl<O: OrderInterface> Evaluator<O> {
                     continue;
                 }
                 let taken_quantity = remaining_quantity.min(remaining);
+                let same_owner = taker_owner == resting_order.owner();
+
                 if post_only && taken_quantity > O::N::default() {
-                    return Instruction::NoOp(order.id().clone(), Msg::PostOnlyWouldTake);
+                    return Instruction::Delete(vec![(order.id().clone(), Msg::PostOnlyWouldTake)]);
                 }
-                remaining_quantity -= taken_quantity;
-                maker_matches.push((resting_order.id().clone(), taken_quantity));
+
+                match stp {
+                    STP::None => {
+                        remaining_quantity -= taken_quantity;
+                        maker_matches.push((resting_order.id().clone(), taken_quantity));
+                    }
+                    STP::CancelTaker => {
+                        if same_owner && taken_quantity > O::N::default() {
+                            return Instruction::Delete(vec![(order.id().clone(), Msg::StpCancelTaker)]);
+                        }
+                        remaining_quantity -= taken_quantity;
+                        maker_matches.push((resting_order.id().clone(), taken_quantity));
+                    }
+                    STP::CancelMaker => {
+                        if same_owner {
+                            cancel_maker_ids.push(resting_order.id().clone());
+                            self.temp
+                                .insert(resting_order.id().clone(), O::N::default());
+                        } else {
+                            remaining_quantity -= taken_quantity;
+                            maker_matches.push((resting_order.id().clone(), taken_quantity));
+                        }
+                    }
+                    STP::CancelBoth => {
+                        if same_owner && taken_quantity > O::N::default() {
+                            cancel_both_triggered = true;
+                            cancel_both_makers.push(resting_order.id().clone());
+                            self.temp
+                                .insert(resting_order.id().clone(), O::N::default());
+                        } else if !cancel_both_triggered {
+                            remaining_quantity -= taken_quantity;
+                            maker_matches.push((resting_order.id().clone(), taken_quantity));
+                        }
+                    }
+                }
             }
         }
 
+        // STP CancelBoth: reject taker and cancel same-owner makers that would have been hit
+        if !cancel_both_makers.is_empty() {
+            let mut pairs = vec![(order.id().clone(), Msg::StpCancelTaker)];
+            pairs.extend(cancel_both_makers.into_iter().map(|id| (id, Msg::Cancelled)));
+            return Instruction::Delete(pairs);
+        }
+
         if tif == TIF::FOK && remaining_quantity > O::N::default() {
-            return Instruction::NoOp(order.id().clone(), Msg::FOKNotFilled);
+            return Instruction::Delete(vec![(order.id().clone(), Msg::FOKNotFilled)]);
         }
 
         // Apply maker quantity updates for subsequent ops in the batch
@@ -139,18 +188,18 @@ impl<O: OrderInterface> Evaluator<O> {
                 .insert(maker_id.clone(), remaining - *taken_quantity);
         }
 
-        if !maker_matches.is_empty() {
+        if !maker_matches.is_empty() || !cancel_maker_ids.is_empty() {
             // IOC: set remaining to 0 so apply does not insert the unfilled portion
             let remaining = if tif == TIF::IOC {
                 O::N::default()
             } else {
                 remaining_quantity
             };
-            return Instruction::Match(order, remaining, maker_matches);
+            return Instruction::Match(order, remaining, maker_matches, cancel_maker_ids);
         }
 
         if tif == TIF::IOC {
-            return Instruction::NoOp(order.id().clone(), Msg::IOCNoFill);
+            return Instruction::Delete(vec![(order.id().clone(), Msg::IOCNoFill)]);
         }
 
         Instruction::Insert(order, remaining_quantity)
@@ -166,9 +215,9 @@ impl<O: OrderInterface> Evaluator<O> {
     #[inline(always)]
     fn eval_cancel_inner(&mut self, ob: &OrderBook<O>, order_id: O::T) -> Instruction<O> {
         if !ob.orders.contains_key(&order_id) {
-            return Instruction::NoOp(order_id, Msg::OrderNotFound);
+            return Instruction::Delete(vec![(order_id, Msg::OrderNotFound)]);
         }
         self.temp.insert(order_id.clone(), O::N::default());
-        Instruction::Delete(order_id)
+        Instruction::Delete(vec![(order_id, Msg::Cancelled)])
     }
 }

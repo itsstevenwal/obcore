@@ -122,6 +122,16 @@ impl TestOrder {
         self.post_only = post_only;
         self
     }
+
+    pub fn with_stp(mut self, stp: STP) -> Self {
+        self.stp = stp;
+        self
+    }
+
+    pub fn with_owner(mut self, owner: &str) -> Self {
+        self.owner = owner.to_string();
+        self
+    }
 }
 
 #[cfg(test)]
@@ -164,5 +174,9 @@ impl OrderInterface for TestOrder {
 
     fn post_only(&self) -> bool {
         self.post_only
+    }
+
+    fn stp(&self) -> STP {
+        self.stp
     }
 }

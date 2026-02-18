@@ -54,7 +54,7 @@ impl<O: OrderInterface> Level<O> {
         order.fill(fill);
         self.total_quantity -= fill;
         if order.remaining() == O::N::default() {
-            self.orders.remove(node_ptr);
+            let _ = self.orders.remove_unchecked(node_ptr);
             return true;
         }
         false
@@ -62,9 +62,11 @@ impl<O: OrderInterface> Level<O> {
 
     #[inline(always)]
     pub fn remove_order(&mut self, node_ptr: *mut Node<O>) {
-        if let Some(order) = self.orders.remove(node_ptr) {
-            self.total_quantity -= order.remaining();
+        if node_ptr.is_null() {
+            return;
         }
+        let order = self.orders.remove_unchecked(node_ptr);
+        self.total_quantity -= order.remaining();
     }
 
     #[inline(always)]

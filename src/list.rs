@@ -1,6 +1,7 @@
 use std::ptr;
 
 /// A node in the doubly linked list.
+#[repr(C)]
 pub struct Node<T> {
     pub data: T,
     pub prev: *mut Node<T>,
@@ -8,7 +9,7 @@ pub struct Node<T> {
 }
 
 impl<T> Node<T> {
-    #[inline]
+    #[inline(always)]
     fn new(data: T) -> Box<Self> {
         Box::new(Node {
             data,
@@ -26,7 +27,7 @@ pub struct List<T> {
 }
 
 impl<T> List<T> {
-    #[inline]
+    #[inline(always)]
     pub fn new() -> Self {
         List {
             head: ptr::null_mut(),
@@ -35,12 +36,12 @@ impl<T> List<T> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.length
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.length == 0
     }
@@ -62,9 +63,9 @@ impl<T> List<T> {
         new_node
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn pop_front(&mut self) -> Option<*mut Node<T>> {
-        if self.head.is_null() || self.length == 0 {
+        if self.head.is_null() {
             return None;
         }
         unsafe {
@@ -81,12 +82,10 @@ impl<T> List<T> {
     }
 
     /// Removes node at pointer. Caller must ensure pointer is valid and in this list.
+    /// Use this when the pointer is known to be non-null and in the list (e.g. from `push_back`).
     #[inline(always)]
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    pub fn remove(&mut self, node_ptr: *mut Node<T>) -> Option<T> {
-        if node_ptr.is_null() || self.length == 0 {
-            return None;
-        }
+    pub fn remove_unchecked(&mut self, node_ptr: *mut Node<T>) -> T {
         unsafe {
             let prev = (*node_ptr).prev;
             let next = (*node_ptr).next;
@@ -101,8 +100,18 @@ impl<T> List<T> {
                 (*next).prev = prev;
             }
             self.length -= 1;
-            Some(Box::from_raw(node_ptr).data)
+            Box::from_raw(node_ptr).data
         }
+    }
+
+    /// Removes node at pointer. Caller must ensure pointer is valid and in this list.
+    #[inline(always)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    pub fn remove(&mut self, node_ptr: *mut Node<T>) -> Option<T> {
+        if node_ptr.is_null() || self.length == 0 {
+            return None;
+        }
+        Some(self.remove_unchecked(node_ptr))
     }
 }
 
