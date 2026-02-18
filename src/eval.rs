@@ -14,20 +14,13 @@ pub enum Msg {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Role {
-    Taker,
-    Maker,
-}
-
-#[derive(Debug, PartialEq, Eq)]
 pub enum Instruction<O: OrderInterface> {
     // (Order, Remaining Quantity)
     Insert(O, O::N),
     // (Order ID)
     Delete(O::T),
-    // (Order ID, Quantity, Role)
-    Fill(O::T, O::N, Role),
+    // (Taker ID, [(Maker ID, Maker Quantity), ...])
+    Match(O::T, Vec<(O::T, O::N)>),
     // (Order ID, Message)
     NoOp(O::T, Msg),
 }
@@ -98,7 +91,7 @@ impl<O: OrderInterface> Evaluator<O> {
         }
 
         let mut remaining_quantity = order.remaining();
-        let mut taker_quantity = O::N::default();
+        let mut maker_matches = Vec::new();
 
         let is_buy = order.is_buy();
         let price = order.price();
@@ -128,22 +121,16 @@ impl<O: OrderInterface> Evaluator<O> {
                 }
                 let taken_quantity = remaining_quantity.min(remaining);
                 remaining_quantity -= taken_quantity;
-                taker_quantity += taken_quantity;
                 self.temp
                     .insert(resting_order.id().clone(), remaining - taken_quantity);
 
-                // Leave space for the taker instruction
-                instructions.push(Instruction::Fill(
-                    resting_order.id().clone(),
-                    taken_quantity,
-                    Role::Maker,
-                ));
+                maker_matches.push((resting_order.id().clone(), taken_quantity));
             }
         }
 
         let taker_id = order.id().clone();
-        if taker_quantity > O::N::default() {
-            instructions.push(Instruction::Fill(taker_id, taker_quantity, Role::Taker));
+        if !maker_matches.is_empty() {
+            instructions.push(Instruction::Match(taker_id, maker_matches));
         }
 
         if remaining_quantity > O::N::default() {

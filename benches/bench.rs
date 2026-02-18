@@ -399,7 +399,10 @@ fn bench_apply_match(c: &mut Criterion) {
                 (ob, 0u64, 100u64)
             },
             |(ob, order_id, quantity)| {
-                black_box(ob.apply_fill(black_box(*order_id), black_box(*quantity)))
+                black_box(ob.apply_match(
+                    black_box(999u64),
+                    vec![(black_box(*order_id), black_box(*quantity))],
+                ))
             },
             BatchSize::LargeInput,
         );
@@ -415,13 +418,16 @@ fn bench_apply_match(c: &mut Criterion) {
                     let instructions = eval.eval(&ob, vec![Op::Insert(sell)]);
                     ob.apply(instructions);
                 }
-                // Fills for orders 0-4, each for 10
-                let fills: Vec<(u64, u64)> = (0..5).map(|i| (i, 10)).collect();
-                (ob, fills)
+                // Matches for orders 0-4, each for 10
+                let matches: Vec<(u64, u64)> = (0..5).map(|i| (i, 10)).collect();
+                (ob, matches)
             },
-            |(ob, fills)| {
-                for (order_id, quantity) in fills.iter() {
-                    black_box(ob.apply_fill(black_box(*order_id), black_box(*quantity)));
+            |(ob, matches)| {
+                for (order_id, quantity) in matches.iter() {
+                    black_box(ob.apply_match(
+                        black_box(999u64),
+                        vec![(black_box(*order_id), black_box(*quantity))],
+                    ));
                 }
             },
             BatchSize::LargeInput,
@@ -438,13 +444,16 @@ fn bench_apply_match(c: &mut Criterion) {
                     let instructions = eval.eval(&ob, vec![Op::Insert(sell)]);
                     ob.apply(instructions);
                 }
-                // Fills for orders 0-9, each for 10
-                let fills: Vec<(u64, u64)> = (0..10).map(|i| (i, 10)).collect();
-                (ob, fills)
+                // Matches for orders 0-9, each for 10
+                let matches: Vec<(u64, u64)> = (0..10).map(|i| (i, 10)).collect();
+                (ob, matches)
             },
-            |(ob, fills)| {
-                for (order_id, quantity) in fills.iter() {
-                    black_box(ob.apply_fill(black_box(*order_id), black_box(*quantity)));
+            |(ob, matches)| {
+                for (order_id, quantity) in matches.iter() {
+                    black_box(ob.apply_match(
+                        black_box(999u64),
+                        vec![(black_box(*order_id), black_box(*quantity))],
+                    ));
                 }
             },
             BatchSize::LargeInput,

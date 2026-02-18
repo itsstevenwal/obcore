@@ -1,4 +1,4 @@
-use crate::eval::{Instruction, Role};
+use crate::eval::Instruction;
 use crate::{hash::FxHashMap, list::Node, order::OrderInterface, side::Side};
 
 /// A complete orderbook with bid and ask sides.
@@ -18,8 +18,9 @@ impl<O: OrderInterface> Default for OrderBook<O> {
     }
 }
 
-// (Order ID, Remaining Quantity)
-pub struct Output<O: OrderInterface>(pub O::T, pub O::N);
+/// List of (order_id, remaining); one vec per instruction.
+#[allow(type_alias_bounds)]
+pub type Output<O: OrderInterface> = Vec<(O::T, O::N)>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OrderBook Implementation
@@ -125,14 +126,15 @@ impl<O: OrderInterface> OrderBook<O> {
         self.apply_delete_inner(order_id)
     }
 
-    /// Applies a single fill instruction. Only available with the `bench` feature.
+    /// Applies a single match instruction. Only available with the `bench` feature.
     #[cfg(feature = "bench")]
     #[inline(always)]
-    pub fn apply_fill(&mut self, order_id: O::T, quantity: O::N) -> Output<O> {
-        self.apply_fill_inner(order_id, quantity)
+    pub fn apply_match(&mut self, taker_id: O::T, maker_matches: Vec<(O::T, O::N)>) -> Output<O> {
+        self.apply_match_inner(taker_id, maker_matches)
     }
 
     /// Applies instructions to the orderbook, mutating state.
+    /// Returns one vec of (order_id, remaining) per instruction; for Match, the vec has makers then taker.
     #[inline]
     pub fn apply(&mut self, instructions: Vec<Instruction<O>>) -> Vec<Output<O>> {
         let mut outputs = Vec::new();
@@ -140,14 +142,10 @@ impl<O: OrderInterface> OrderBook<O> {
             let output = match instruction {
                 Instruction::Insert(order, remaining) => self.apply_insert_inner(order, remaining),
                 Instruction::Delete(order_id) => self.apply_delete_inner(order_id),
-                Instruction::Fill(order_id, quantity, role) => {
-                    if role == Role::Maker {
-                        self.apply_fill_inner(order_id, quantity)
-                    } else {
-                        Output(order_id.clone(), O::N::default())
-                    }
+                Instruction::Match(taker_id, maker_matches) => {
+                    self.apply_match_inner(taker_id, maker_matches)
                 }
-                Instruction::NoOp(order_id, _) => Output(order_id.clone(), O::N::default()),
+                Instruction::NoOp(order_id, _) => vec![(order_id, O::N::default())],
             };
 
             outputs.push(output);
@@ -167,7 +165,7 @@ impl<O: OrderInterface> OrderBook<O> {
         let node_ptr = self.side_mut(is_buy).insert_order(order);
         self.orders.insert(id.clone(), node_ptr);
 
-        Output(id, remaining)
+        vec![(id, remaining)]
     }
 
     #[inline(always)]
@@ -178,7 +176,7 @@ impl<O: OrderInterface> OrderBook<O> {
             self.orders.remove(&order_id);
         }
 
-        Output(order_id, O::N::default())
+        vec![(order_id, O::N::default())]
     }
 
     #[inline(always)]
@@ -188,18 +186,30 @@ impl<O: OrderInterface> OrderBook<O> {
         let removed = self.side_mut(is_buy).fill_order(node_ptr, quantity);
         if removed {
             self.orders.remove(&order_id);
-            Output(order_id, quantity)
+            vec![(order_id, O::N::default())]
         } else {
             let remaining = unsafe { (*node_ptr).data.remaining() };
-            Output(order_id, remaining)
+            vec![(order_id, remaining)]
         }
+    }
+
+    #[inline(always)]
+    fn apply_match_inner(&mut self, taker_id: O::T, maker_matches: Vec<(O::T, O::N)>) -> Output<O> {
+        let mut out = Vec::with_capacity(maker_matches.len() + 1);
+        let mut total_matched = O::N::default();
+        for (maker_id, qty) in maker_matches {
+            out.extend(self.apply_fill_inner(maker_id, qty));
+            total_matched += qty;
+        }
+        out.push((taker_id, total_matched));
+        out
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::{Evaluator, Msg, Op, Role};
+    use crate::eval::{Evaluator, Msg, Op};
     use crate::order::TestOrder;
 
     fn setup_order(ob: &mut OrderBook<TestOrder>, id: &str, is_buy: bool, price: u64, qty: u64) {
@@ -396,15 +406,11 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 100);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Insert(TestOrder::new("b1", true, 1000, 100))]);
-        // Maker fill then taker fill
-        assert_eq!(i.len(), 2);
+        // One Match (taker b1, maker s1)
+        assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Fill(String::from("s1"), 100, Role::Maker)
-        );
-        assert_eq!(
-            i[1],
-            Instruction::Fill(String::from("b1"), 100, Role::Taker)
+            Instruction::Match(String::from("b1"), vec![(String::from("s1"), 100)])
         );
 
         let mut ob = OrderBook::<TestOrder>::default();
@@ -412,11 +418,13 @@ mod tests {
         let order = TestOrder::new("b1", true, 1000, 100);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
-        // Maker fill, taker fill, then insert remainder
-        assert_eq!(i.len(), 3);
-        assert_eq!(i[0], Instruction::Fill(String::from("s1"), 50, Role::Maker));
-        assert_eq!(i[1], Instruction::Fill(String::from("b1"), 50, Role::Taker));
-        assert_eq!(i[2], Instruction::Insert(order, 50));
+        // One Match then insert remainder
+        assert_eq!(i.len(), 2);
+        assert_eq!(
+            i[0],
+            Instruction::Match(String::from("b1"), vec![(String::from("s1"), 50)])
+        );
+        assert_eq!(i[1], Instruction::Insert(order, 50));
     }
 
     #[test]
@@ -437,11 +445,7 @@ mod tests {
         let i = eval.eval(&ob, vec![Op::Insert(TestOrder::new("b1", true, 1100, 100))]);
         assert_eq!(
             i[0],
-            Instruction::Fill(String::from("s1"), 100, Role::Maker)
-        );
-        assert_eq!(
-            i[1],
-            Instruction::Fill(String::from("b1"), 100, Role::Taker)
+            Instruction::Match(String::from("b1"), vec![(String::from("s1"), 100)])
         );
 
         // Sell doesn't match lower buy
@@ -466,11 +470,7 @@ mod tests {
         );
         assert_eq!(
             i[0],
-            Instruction::Fill(String::from("b1"), 100, Role::Maker)
-        );
-        assert_eq!(
-            i[1],
-            Instruction::Fill(String::from("s1"), 100, Role::Taker)
+            Instruction::Match(String::from("s1"), vec![(String::from("b1"), 100)])
         );
     }
 
@@ -484,8 +484,8 @@ mod tests {
             &ob,
             vec![Op::Insert(TestOrder::new("s1", false, 1000, 100))],
         );
-        // 2 maker fills + 1 taker fill + 1 insert for remaining 30
-        assert_eq!(i.len(), 4);
+        // 1 Match (s1 vs b1 30, b2 40) + 1 insert for remaining 30
+        assert_eq!(i.len(), 2);
     }
 
     #[test]
@@ -495,16 +495,16 @@ mod tests {
         setup_order(&mut ob, "s2", false, 1000, 50);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Insert(TestOrder::new("b1", true, 1000, 50))]);
-        // 1 maker fill + 1 taker fill (only matches first order)
-        assert_eq!(i.len(), 2);
+        // 1 Match (b1 vs s1 50)
+        assert_eq!(i.len(), 1);
 
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "b1", true, 1000, 50);
         setup_order(&mut ob, "b2", true, 1000, 50);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Insert(TestOrder::new("s1", false, 1000, 50))]);
-        // 1 maker fill + 1 taker fill (only matches first order)
-        assert_eq!(i.len(), 2);
+        // 1 Match (s1 vs b1 50)
+        assert_eq!(i.len(), 1);
     }
 
     #[test]
@@ -535,16 +535,15 @@ mod tests {
             Op::Insert(TestOrder::new("b3", true, 1000, 50)),
         ];
         let i = eval.eval(&ob, ops);
-        // b1: maker fill (30) + taker fill (30)
-        // b2: maker fill (20) + taker fill (20)
+        // b1: Match(b1, [(s1, 30)])
+        // b2: Match(b2, [(s1, 20)])
         // s1: delete
         // b3: insert (no match since s1 was deleted in temp state)
-        // Check for taker fills
-        let taker_fills: Vec<_> = i
+        let matches: Vec<_> = i
             .iter()
-            .filter(|instr| matches!(instr, Instruction::Fill(_, _, Role::Taker)))
+            .filter(|instr| matches!(instr, Instruction::Match(_, v) if !v.is_empty()))
             .collect();
-        assert_eq!(taker_fills.len(), 2); // b1 and b2 matched
+        assert_eq!(matches.len(), 2); // b1 and b2 matched
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -593,34 +592,46 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_fill() {
-        // Partial fill sell
+    fn test_apply_match() {
+        // Partial fill sell (taker "t1", maker "1" filled 30)
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", false, 1000, 100);
-        ob.apply(vec![Instruction::Fill(String::from("1"), 30, Role::Maker)]);
+        ob.apply(vec![Instruction::Match(
+            String::from("t1"),
+            vec![(String::from("1"), 30)],
+        )]);
         assert_eq!(ob.order(&String::from("1")).unwrap().remaining(), 70);
 
         // Complete fill sell
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", false, 1000, 100);
-        ob.apply(vec![Instruction::Fill(String::from("1"), 100, Role::Maker)]);
+        ob.apply(vec![Instruction::Match(
+            String::from("t1"),
+            vec![(String::from("1"), 100)],
+        )]);
         assert!(ob.asks.is_empty());
 
         // Partial fill buy
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", true, 1000, 100);
-        ob.apply(vec![Instruction::Fill(String::from("1"), 30, Role::Maker)]);
+        ob.apply(vec![Instruction::Match(
+            String::from("t1"),
+            vec![(String::from("1"), 30)],
+        )]);
         assert_eq!(ob.order(&String::from("1")).unwrap().remaining(), 70);
 
         // Complete fill buy
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", true, 1000, 100);
-        ob.apply(vec![Instruction::Fill(String::from("1"), 100, Role::Maker)]);
+        ob.apply(vec![Instruction::Match(
+            String::from("t1"),
+            vec![(String::from("1"), 100)],
+        )]);
         assert!(ob.bids.is_empty());
 
-        // Non-existent (no panic) - use Taker role since those are not applied
+        // Empty maker list (no panic)
         let mut ob = OrderBook::<TestOrder>::default();
-        ob.apply(vec![Instruction::Fill(String::from("x"), 50, Role::Taker)]);
+        ob.apply(vec![Instruction::Match(String::from("x"), vec![])]);
     }
 
     #[test]
@@ -644,11 +655,11 @@ mod tests {
         let ops = vec![Op::Insert(TestOrder::new("b1", true, 1000, 60))];
         let mut eval = Evaluator::default();
         let instructions = eval.eval(&ob, ops);
-        // Check there's a taker fill of 60
-        let taker_fill = instructions
-            .iter()
-            .find(|i| matches!(i, Instruction::Fill(_, 60, Role::Taker)));
-        assert!(taker_fill.is_some());
+        // Check there's a Match for b1 with total matched 60
+        let taker_match = instructions.iter().find(|i| {
+            matches!(i, Instruction::Match(id, v) if *id == "b1" && v.iter().map(|(_, q)| q).sum::<u64>() == 60)
+        });
+        assert!(taker_match.is_some());
         ob.apply(instructions);
         assert_eq!(ob.order(&String::from("s1")).unwrap().remaining(), 40);
         assert!(!ob.orders.contains_key("b1"));
