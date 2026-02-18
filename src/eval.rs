@@ -58,15 +58,23 @@ pub enum Instruction<O: OrderInterface> {
 }
 
 /// Evaluator: turns ops into instructions without mutating the book.
-/// `temp`: order id → virtual remaining qty for this batch (filled/cancelled by earlier ops).
+///
+/// Reusable — call `reset()` between independent batches. Within a single `eval()` call,
+/// `temp` tracks virtual remaining qty so later ops see earlier effects. `fills` and
+/// `stp_cancels` are kept as struct fields to avoid per-call heap allocation.
 pub struct Evaluator<O: OrderInterface> {
     temp: FxHashMap<O::T, O::N>,
+    // (maker_id, fill_qty, maker_avail_before_fill) — avail cached to skip re-hashing in temp update
+    fills: Vec<(O::T, O::N, O::N)>,
+    stp_cancels: Vec<O::T>,
 }
 
 impl<O: OrderInterface> Default for Evaluator<O> {
     fn default() -> Self {
         Self {
             temp: FxHashMap::default(),
+            fills: Vec::new(),
+            stp_cancels: Vec::new(),
         }
     }
 }
@@ -82,25 +90,19 @@ impl<O: OrderInterface> Evaluator<O> {
     /// Uses `temp` so each op sees the effect of previous ops in the batch (e.g. maker qty already taken).
     #[inline]
     pub fn eval(&mut self, ob: &OrderBook<O>, ops: Vec<Op<O>>) -> Vec<Instruction<O>> {
-        let mut instructions = Vec::new();
+        let mut instructions = Vec::with_capacity(ops.len());
         for op in ops {
             match op {
-                Op::Insert(order) => instructions.push(self.eval_insert_inner(ob, order)),
-                Op::Delete(order_id) => instructions.push(self.eval_cancel_inner(ob, order_id)),
+                Op::Insert(order) => instructions.push(self.eval_insert(ob, order)),
+                Op::Delete(order_id) => instructions.push(self.eval_cancel(ob, order_id)),
             }
         }
         instructions
     }
 
-    /// Evaluates a single insert operation. Only available with the `bench` feature.
-    #[cfg(feature = "bench")]
+    /// Evaluates a single insert operation.
     #[inline(always)]
     pub fn eval_insert(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
-        self.eval_insert_inner(ob, order)
-    }
-
-    #[inline(always)]
-    fn eval_insert_inner(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
         if ob.orders.contains_key(order.id()) {
             return Instruction::Single(InstructionPrimitive::Delete(
                 order.id().clone(),
@@ -118,8 +120,14 @@ impl<O: OrderInterface> Evaluator<O> {
 
         let zero = O::N::default();
         let mut remaining = order.remaining();
-        let mut fills: Vec<(O::T, O::N)> = Vec::new();
-        let mut stp_cancels: Vec<O::T> = Vec::new();
+
+        let Evaluator {
+            temp,
+            fills,
+            stp_cancels,
+        } = self;
+        fills.clear();
+        stp_cancels.clear();
 
         'outer: for level in opposite.iter() {
             if (is_buy && price < level.price()) || (!is_buy && price > level.price()) {
@@ -129,7 +137,7 @@ impl<O: OrderInterface> Evaluator<O> {
                 if remaining == zero {
                     break 'outer;
                 }
-                let maker_avail = *self.temp.get(maker.id()).unwrap_or(&maker.remaining());
+                let maker_avail = *temp.get(maker.id()).unwrap_or(&maker.remaining());
                 if maker_avail == zero {
                     continue;
                 }
@@ -153,11 +161,11 @@ impl<O: OrderInterface> Evaluator<O> {
                         }
                         STP::CancelMaker => {
                             stp_cancels.push(maker.id().clone());
-                            self.temp.insert(maker.id().clone(), zero);
+                            temp.insert(maker.id().clone(), zero);
                             continue;
                         }
                         STP::CancelBoth => {
-                            self.temp.insert(maker.id().clone(), zero);
+                            temp.insert(maker.id().clone(), zero);
                             return Instruction::Multi(vec![
                                 InstructionPrimitive::Delete(
                                     order.id().clone(),
@@ -173,7 +181,7 @@ impl<O: OrderInterface> Evaluator<O> {
                 }
 
                 remaining -= fill_qty;
-                fills.push((maker.id().clone(), fill_qty));
+                fills.push((maker.id().clone(), fill_qty, maker_avail));
             }
         }
 
@@ -185,13 +193,9 @@ impl<O: OrderInterface> Evaluator<O> {
         }
 
         // Record fills in temp so later ops in this batch see reduced maker qty.
-        for (id, qty) in &fills {
-            let prev = self
-                .temp
-                .get(id)
-                .copied()
-                .unwrap_or_else(|| ob.order(id).map(|o| o.remaining()).unwrap_or(zero));
-            self.temp.insert(id.clone(), prev - *qty);
+        // maker_avail was cached in fills to avoid re-hashing temp here.
+        for &(ref id, qty, avail) in fills.iter() {
+            temp.insert(id.clone(), avail - qty);
         }
 
         let has_activity = !fills.is_empty() || !stp_cancels.is_empty();
@@ -202,10 +206,10 @@ impl<O: OrderInterface> Evaluator<O> {
             let mut out = Vec::with_capacity(cap);
             out.extend(
                 fills
-                    .into_iter()
-                    .map(|(id, qty)| InstructionPrimitive::Fill(id, qty)),
+                    .drain(..)
+                    .map(|(id, qty, _)| InstructionPrimitive::Fill(id, qty)),
             );
-            for id in stp_cancels {
+            for id in stp_cancels.drain(..) {
                 out.push(InstructionPrimitive::Delete(id, Msg::StpCancelMaker));
             }
             if rest > zero {
@@ -224,15 +228,9 @@ impl<O: OrderInterface> Evaluator<O> {
         Instruction::Single(InstructionPrimitive::Insert(order, remaining))
     }
 
-    /// Evaluates a single cancel operation. Only available with the `bench` feature.
-    #[cfg(feature = "bench")]
+    /// Evaluates a single cancel operation.
     #[inline(always)]
     pub fn eval_cancel(&mut self, ob: &OrderBook<O>, order_id: O::T) -> Instruction<O> {
-        self.eval_cancel_inner(ob, order_id)
-    }
-
-    #[inline(always)]
-    fn eval_cancel_inner(&mut self, ob: &OrderBook<O>, order_id: O::T) -> Instruction<O> {
         if !ob.orders.contains_key(&order_id) {
             return Instruction::Single(InstructionPrimitive::Delete(order_id, Msg::OrderNotFound));
         }

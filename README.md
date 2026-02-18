@@ -21,7 +21,7 @@ Run with: `cargo bench --features bench`
 | Cancel    | Single      | 4.9 ns  | 27.2 ns | 32 ns (31 M/s)  |
 | Cancel    | Depth 100   | 9.0 ns  | 48.9 ns | 58 ns (17 M/s)  |
 | Cancel    | Depth 1000  | 24.6 ns | 54.0 ns | 79 ns (13 M/s)  |
-| Match     | 1 level     | 39.3 ns | 83.3 ns | 123 ns (8.1 M/s)  |
+| Match     | 1 level     | 39.3 ns | 83.3 ns | 123 ns (8.1 M/s) |
 | Match     | 5 levels    | 103 ns  | 177 ns  | 280 ns (3.6 M/s) |
 | Match     | 10 levels   | 189 ns  | 318 ns  | 507 ns (2.0 M/s) |
 
