@@ -10,5 +10,5 @@ pub use eval::{Evaluator, Instruction, Msg, Op};
 pub use level::Level;
 pub use list::List;
 pub use ob::*;
-pub use order::{OrderInterface, TimeInForce};
+pub use order::{OrderInterface, STP, TIF};
 pub use side::Side;

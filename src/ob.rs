@@ -215,7 +215,7 @@ impl<O: OrderInterface> OrderBook<O> {
 mod tests {
     use super::*;
     use crate::eval::{Evaluator, Instruction, Msg, Op};
-    use crate::order::{TestOrder, TimeInForce};
+    use crate::order::{TestOrder, TIF};
 
     fn setup_order(ob: &mut OrderBook<TestOrder>, id: &str, is_buy: bool, price: u64, qty: u64) {
         let order = TestOrder::new(id, is_buy, price, qty);
@@ -699,7 +699,7 @@ mod tests {
     fn test_fok_full_fill() {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "s1", false, 1000, 100);
-        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TimeInForce::FOK);
+        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TIF::FOK);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
         // FOK fully filled: one Match
@@ -714,7 +714,7 @@ mod tests {
     fn test_fok_partial_reject() {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "s1", false, 1000, 50);
-        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TimeInForce::FOK);
+        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TIF::FOK);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Insert(order)]);
         assert_eq!(i.len(), 1);
@@ -728,7 +728,7 @@ mod tests {
     fn test_ioc_partial_fill() {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "s1", false, 1000, 50);
-        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TimeInForce::IOC);
+        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TIF::IOC);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
         // IOC: Match 50, remaining set to 0 so apply does not insert
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn test_ioc_no_match() {
         let ob = OrderBook::<TestOrder>::default();
-        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TimeInForce::IOC);
+        let order = TestOrder::new("b1", true, 1000, 100).with_tif(TIF::IOC);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Insert(order)]);
         // IOC with no liquidity: one NoOp

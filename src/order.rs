@@ -6,7 +6,7 @@ use std::{
 
 /// Time in force for an order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TimeInForce {
+pub enum TIF {
     /// Fill entire order immediately or cancel (no resting quantity).
     FOK,
     /// Fill as much as possible immediately, cancel the rest (no resting quantity).
@@ -14,6 +14,20 @@ pub enum TimeInForce {
     /// Good till cancelled; remainder rests on the book.
     #[default]
     GTC,
+}
+
+/// Self-trade protection mode when taker and maker share the same owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum STP {
+    /// No self-trade protection.
+    #[default]
+    None,
+    /// Cancel the incoming (taker) order when it would match against same-owner makers.
+    CancelTaker,
+    /// Cancel the resting (maker) order(s) that would self-trade; taker fills against others.
+    CancelMaker,
+    /// Cancel both taker and maker(s) involved in the self-trade.
+    CancelBoth,
 }
 
 /// Trait defining the interface for orders in the orderbook.
@@ -35,6 +49,9 @@ pub trait OrderInterface {
         + MulAssign
         + DivAssign;
 
+    /// Owner/trader id for self-trade detection.
+    type Owner: Eq + Clone;
+
     fn id(&self) -> &Self::T;
     fn is_buy(&self) -> bool;
     fn price(&self) -> Self::N;
@@ -48,9 +65,16 @@ pub trait OrderInterface {
     /// Fill the order, updating remaining quantity.
     fn fill(&mut self, quantity: Self::N);
 
+    /// Owner id for self-trade protection.
+    fn owner(&self) -> &Self::Owner;
+
     /// Time in force: FOK, IOC, or GTC. Default is GTC.
-    fn tif(&self) -> TimeInForce {
-        TimeInForce::GTC
+    fn tif(&self) -> TIF {
+        TIF::GTC
+    }
+
+    fn stp(&self) -> STP {
+        STP::None
     }
 
     /// If true, order must not take; it is rejected if it would cross the spread.
@@ -60,15 +84,17 @@ pub trait OrderInterface {
 }
 
 #[cfg(test)]
-#[derive(Default, Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TestOrder {
     id: String,
     is_buy: bool,
     price: u64,
     quantity: u64,
     remaining: u64,
-    tif: TimeInForce,
+    tif: TIF,
+    stp: STP,
     post_only: bool,
+    owner: String,
 }
 
 #[cfg(test)]
@@ -80,12 +106,14 @@ impl TestOrder {
             price,
             quantity,
             remaining: quantity,
-            tif: TimeInForce::GTC,
+            tif: TIF::GTC,
+            stp: STP::None,
             post_only: false,
+            owner: id.to_string(),
         }
     }
 
-    pub fn with_tif(mut self, tif: TimeInForce) -> Self {
+    pub fn with_tif(mut self, tif: TIF) -> Self {
         self.tif = tif;
         self
     }
@@ -100,6 +128,7 @@ impl TestOrder {
 impl OrderInterface for TestOrder {
     type T = String;
     type N = u64;
+    type Owner = String;
 
     fn id(&self) -> &String {
         &self.id
@@ -125,7 +154,11 @@ impl OrderInterface for TestOrder {
         self.remaining -= quantity;
     }
 
-    fn tif(&self) -> TimeInForce {
+    fn owner(&self) -> &String {
+        &self.owner
+    }
+
+    fn tif(&self) -> TIF {
         self.tif
     }
 

@@ -27,6 +27,7 @@ impl BenchOrder {
 impl OrderInterface for BenchOrder {
     type T = u64;
     type N = u64;
+    type Owner = u64;
 
     fn id(&self) -> &u64 {
         &self.id
@@ -50,6 +51,10 @@ impl OrderInterface for BenchOrder {
 
     fn fill(&mut self, quantity: u64) {
         self.remaining -= quantity;
+    }
+
+    fn owner(&self) -> &u64 {
+        &self.id
     }
 }
 

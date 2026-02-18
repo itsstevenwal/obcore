@@ -1,7 +1,7 @@
 use crate::{
     hash::FxHashMap,
     ob::OrderBook,
-    order::{OrderInterface, TimeInForce},
+    order::{OrderInterface, TIF},
 };
 
 /// An operation to apply to the orderbook.
@@ -124,7 +124,7 @@ impl<O: OrderInterface> Evaluator<O> {
             }
         }
 
-        if tif == TimeInForce::FOK && remaining_quantity > O::N::default() {
+        if tif == TIF::FOK && remaining_quantity > O::N::default() {
             return Instruction::NoOp(order.id().clone(), Msg::FOKNotFilled);
         }
 
@@ -141,7 +141,7 @@ impl<O: OrderInterface> Evaluator<O> {
 
         if !maker_matches.is_empty() {
             // IOC: set remaining to 0 so apply does not insert the unfilled portion
-            let remaining = if tif == TimeInForce::IOC {
+            let remaining = if tif == TIF::IOC {
                 O::N::default()
             } else {
                 remaining_quantity
@@ -149,7 +149,7 @@ impl<O: OrderInterface> Evaluator<O> {
             return Instruction::Match(order, remaining, maker_matches);
         }
 
-        if tif == TimeInForce::IOC {
+        if tif == TIF::IOC {
             return Instruction::NoOp(order.id().clone(), Msg::IOCNoFill);
         }
 
