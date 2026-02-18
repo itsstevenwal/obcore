@@ -116,13 +116,12 @@ impl<O: OrderInterface> Evaluator<O> {
                     continue;
                 }
                 let taken_quantity = remaining_quantity.min(remaining);
+                if post_only && taken_quantity > O::N::default() {
+                    return Instruction::NoOp(order.id().clone(), Msg::PostOnlyWouldTake);
+                }
                 remaining_quantity -= taken_quantity;
                 maker_matches.push((resting_order.id().clone(), taken_quantity));
             }
-        }
-
-        if post_only && !maker_matches.is_empty() {
-            return Instruction::NoOp(order.id().clone(), Msg::PostOnlyWouldTake);
         }
 
         if tif == TimeInForce::FOK && remaining_quantity > O::N::default() {
