@@ -15,15 +15,15 @@ Run with: `cargo bench --features bench`
 
 | Operation | Benchmark   | Eval   | Apply  | Total   |
 |-----------|-------------|--------|--------|---------|
-| Insert    | Empty book  | 10.8 ns | 56.3 ns | 67 ns (15 M/s)  |
-| Insert    | Depth 100   | 16.5 ns | 35.2 ns | 52 ns (19 M/s)  |
-| Insert    | Depth 1000  | 32.4 ns | 48.0 ns | 80 ns (13 M/s)  |
-| Cancel    | Single      | 4.9 ns  | 27.2 ns | 32 ns (31 M/s)  |
-| Cancel    | Depth 100   | 9.0 ns  | 48.9 ns | 58 ns (17 M/s)  |
-| Cancel    | Depth 1000  | 24.6 ns | 54.0 ns | 79 ns (13 M/s)  |
-| Match     | 1 level     | 39.3 ns | 83.3 ns | 123 ns (8.1 M/s) |
-| Match     | 5 levels    | 103 ns  | 177 ns  | 280 ns (3.6 M/s) |
-| Match     | 10 levels   | 189 ns  | 318 ns  | 507 ns (2.0 M/s) |
+| Insert    | Empty book  | 7.5 ns  | 43.6 ns | 51 ns (20 M/s)  |
+| Insert    | Depth 100   | 11.6 ns | 31.0 ns | 43 ns (23 M/s)  |
+| Insert    | Depth 1000  | 32.7 ns | 50.2 ns | 83 ns (12 M/s)  |
+| Cancel    | Single      | 4.9 ns  | 21.4 ns | 26 ns (38 M/s)  |
+| Cancel    | Depth 100   | 8.0 ns  | 38.1 ns | 46 ns (22 M/s)  |
+| Cancel    | Depth 1000  | 24.1 ns | 66.1 ns | 90 ns (11 M/s)  |
+| Match     | 1 level     | 20.9 ns | 77.8 ns | 99 ns (10 M/s)  |
+| Match     | 5 levels    | 45.6 ns | 170 ns  | 216 ns (4.6 M/s) |
+| Match     | 10 levels   | 88.7 ns | 304 ns  | 393 ns (2.5 M/s) |
 
 *Total = Eval + Apply. Throughput in millions of ops/sec.*
 
