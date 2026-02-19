@@ -58,23 +58,19 @@ impl OrderInterface for BenchOrder {
     }
 }
 
-fn apply_all(ob: &mut OrderBook<BenchOrder>, instructions: Vec<Instruction<BenchOrder>>) {
-    for instr in instructions {
-        ob.apply(instr);
-    }
-}
-
 /// Helper to pre-populate an order book with N orders on each side
 fn populate_book(ob: &mut OrderBook<BenchOrder>, count: usize) -> u64 {
     let mut eval = Evaluator::default();
     for i in 0..count {
         let buy = BenchOrder::new(i as u64, true, 900 + (i % 50) as u64, 100);
-        let instrs = eval.eval(ob, Op::Insert(buy));
-        apply_all(ob, instrs);
+        for instr in eval.eval(ob, Op::Insert(buy)) {
+            ob.apply(instr);
+        }
 
         let sell = BenchOrder::new((i + count) as u64, false, 1100 + (i % 50) as u64, 100);
-        let instrs = eval.eval(ob, Op::Insert(sell));
-        apply_all(ob, instrs);
+        for instr in eval.eval(ob, Op::Insert(sell)) {
+            ob.apply(instr);
+        }
     }
     (count * 2) as u64
 }
@@ -101,7 +97,7 @@ fn bench_eval_insert(c: &mut Criterion) {
             },
             |(ob, order)| {
                 eval.reset();
-                black_box(eval.eval_insert(ob, black_box(order.take().unwrap())))
+                black_box(eval.eval_insert(ob, black_box(order.take().unwrap())).count());
             },
             BatchSize::LargeInput,
         );
@@ -117,7 +113,7 @@ fn bench_eval_insert(c: &mut Criterion) {
             },
             |(ob, order)| {
                 eval.reset();
-                black_box(eval.eval_insert(ob, black_box(order.take().unwrap())))
+                black_box(eval.eval_insert(ob, black_box(order.take().unwrap())).count());
             },
             BatchSize::LargeInput,
         );
@@ -133,7 +129,7 @@ fn bench_eval_insert(c: &mut Criterion) {
             },
             |(ob, order)| {
                 eval.reset();
-                black_box(eval.eval_insert(ob, black_box(order.take().unwrap())))
+                black_box(eval.eval_insert(ob, black_box(order.take().unwrap())).count());
             },
             BatchSize::LargeInput,
         );
@@ -204,13 +200,14 @@ fn bench_eval_cancel(c: &mut Criterion) {
                 let mut ob = OrderBook::<BenchOrder>::default();
                 let mut setup_eval = Evaluator::default();
                 let order = BenchOrder::new(0, true, 900, 100);
-                let instrs = setup_eval.eval(&ob, Op::Insert(order));
-                apply_all(&mut ob, instrs);
+                for instr in setup_eval.eval(&ob, Op::Insert(order)) {
+                    ob.apply(instr);
+                }
                 (ob, 0u64)
             },
             |(ob, order_id)| {
                 eval.reset();
-                black_box(eval.eval_cancel(ob, black_box(*order_id)))
+                black_box(eval.eval_cancel(ob, black_box(*order_id)).count());
             },
             BatchSize::LargeInput,
         );
@@ -225,7 +222,7 @@ fn bench_eval_cancel(c: &mut Criterion) {
             },
             |(ob, order_id)| {
                 eval.reset();
-                black_box(eval.eval_cancel(ob, black_box(*order_id)))
+                black_box(eval.eval_cancel(ob, black_box(*order_id)).count());
             },
             BatchSize::LargeInput,
         );
@@ -240,7 +237,7 @@ fn bench_eval_cancel(c: &mut Criterion) {
             },
             |(ob, order_id)| {
                 eval.reset();
-                black_box(eval.eval_cancel(ob, black_box(*order_id)))
+                black_box(eval.eval_cancel(ob, black_box(*order_id)).count());
             },
             BatchSize::LargeInput,
         );
@@ -260,8 +257,9 @@ fn bench_apply_cancel(c: &mut Criterion) {
                 let mut ob = OrderBook::<BenchOrder>::default();
                 let mut eval = Evaluator::default();
                 let order = BenchOrder::new(0, true, 900, 100);
-                let instrs = eval.eval(&ob, Op::Insert(order));
-                apply_all(&mut ob, instrs);
+                for instr in eval.eval(&ob, Op::Insert(order)) {
+                    ob.apply(instr);
+                }
                 (ob, 0u64)
             },
             |(ob, order_id)| black_box(ob.apply_delete(black_box(*order_id))),
@@ -306,14 +304,16 @@ fn bench_eval_match(c: &mut Criterion) {
                 let mut ob = OrderBook::<BenchOrder>::default();
                 let mut setup_eval = Evaluator::default();
                 let sell = BenchOrder::new(0, false, 1000, 100);
-                let instrs = setup_eval.eval(&ob, Op::Insert(sell));
-                apply_all(&mut ob, instrs);
+                for instr in setup_eval.eval(&ob, Op::Insert(sell)) {
+                    ob.apply(instr);
+                }
                 let buy = BenchOrder::new(1, true, 1000, 100);
                 (ob, Some(buy))
             },
             |(ob, buy)| {
                 eval.reset();
-                black_box(eval.eval_insert(ob, black_box(buy.take().unwrap())))
+                eval.eval_insert(ob, black_box(buy.take().unwrap()))
+                    .for_each(|i| { black_box(i); });
             },
             BatchSize::LargeInput,
         );
@@ -327,15 +327,17 @@ fn bench_eval_match(c: &mut Criterion) {
                 let mut setup_eval = Evaluator::default();
                 for i in 0..5u64 {
                     let sell = BenchOrder::new(i, false, 1000 + i, 10);
-                    let instrs = setup_eval.eval(&ob, Op::Insert(sell));
-                    apply_all(&mut ob, instrs);
+                    for instr in setup_eval.eval(&ob, Op::Insert(sell)) {
+                        ob.apply(instr);
+                    }
                 }
                 let buy = BenchOrder::new(5, true, 1005, 50);
                 (ob, Some(buy))
             },
             |(ob, buy)| {
                 eval.reset();
-                black_box(eval.eval_insert(ob, black_box(buy.take().unwrap())))
+                eval.eval_insert(ob, black_box(buy.take().unwrap()))
+                    .for_each(|i| { black_box(i); });
             },
             BatchSize::LargeInput,
         );
@@ -349,15 +351,17 @@ fn bench_eval_match(c: &mut Criterion) {
                 let mut setup_eval = Evaluator::default();
                 for i in 0..10u64 {
                     let sell = BenchOrder::new(i, false, 1000 + i, 10);
-                    let instrs = setup_eval.eval(&ob, Op::Insert(sell));
-                    apply_all(&mut ob, instrs);
+                    for instr in setup_eval.eval(&ob, Op::Insert(sell)) {
+                        ob.apply(instr);
+                    }
                 }
                 let buy = BenchOrder::new(10, true, 1010, 100);
                 (ob, Some(buy))
             },
             |(ob, buy)| {
                 eval.reset();
-                black_box(eval.eval_insert(ob, black_box(buy.take().unwrap())))
+                eval.eval_insert(ob, black_box(buy.take().unwrap()))
+                    .for_each(|i| { black_box(i); });
             },
             BatchSize::LargeInput,
         );
@@ -377,8 +381,9 @@ fn bench_apply_match(c: &mut Criterion) {
                 let mut ob = OrderBook::<BenchOrder>::default();
                 let mut eval = Evaluator::default();
                 let sell = BenchOrder::new(0, false, 1000, 100);
-                let instrs = eval.eval(&ob, Op::Insert(sell));
-                apply_all(&mut ob, instrs);
+                for instr in eval.eval(&ob, Op::Insert(sell)) {
+                    ob.apply(instr);
+                }
                 ob
             },
             |ob| black_box(ob.apply(Instruction::Fill(0, 0, 1000, 100, false))),
@@ -393,8 +398,9 @@ fn bench_apply_match(c: &mut Criterion) {
                 let mut eval = Evaluator::default();
                 for i in 0..5u64 {
                     let sell = BenchOrder::new(i, false, 1000 + i, 10);
-                    let instrs = eval.eval(&ob, Op::Insert(sell));
-                    apply_all(&mut ob, instrs);
+                    for instr in eval.eval(&ob, Op::Insert(sell)) {
+                        ob.apply(instr);
+                    }
                 }
                 ob
             },
@@ -417,8 +423,9 @@ fn bench_apply_match(c: &mut Criterion) {
                 let mut eval = Evaluator::default();
                 for i in 0..10u64 {
                     let sell = BenchOrder::new(i, false, 1000 + i, 10);
-                    let instrs = eval.eval(&ob, Op::Insert(sell));
-                    apply_all(&mut ob, instrs);
+                    for instr in eval.eval(&ob, Op::Insert(sell)) {
+                        ob.apply(instr);
+                    }
                 }
                 ob
             },

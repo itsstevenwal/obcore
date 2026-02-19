@@ -372,13 +372,13 @@ mod tests {
         let ob = OrderBook::<TestOrder>::default();
         let mut eval = Evaluator::default();
         let order = TestOrder::new("1", true, 1000, 100);
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(i, vec![Instruction::Insert(order, 100)]);
 
         let ob = OrderBook::<TestOrder>::default();
         let mut eval = Evaluator::default();
         let order = TestOrder::new("1", false, 1000, 50);
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(i, vec![Instruction::Insert(order, 50)]);
     }
 
@@ -387,7 +387,7 @@ mod tests {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", true, 1000, 100);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(TestOrder::new("1", true, 1000, 50)));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("1", true, 1000, 50))).collect();
         assert_eq!(
             i,
             vec![Instruction::NoOp(
@@ -401,7 +401,7 @@ mod tests {
     fn test_eval_cancel() {
         let mut ob = OrderBook::<TestOrder>::default();
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Delete(String::from("x")));
+        let i: Vec<_> = eval.eval(&ob, Op::Delete(String::from("x"))).collect();
         assert_eq!(
             i,
             vec![Instruction::NoOp(String::from("x"), Msg::OrderNotFound)]
@@ -409,7 +409,7 @@ mod tests {
 
         setup_order(&mut ob, "1", true, 1000, 100);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Delete(String::from("1")));
+        let i: Vec<_> = eval.eval(&ob, Op::Delete(String::from("1"))).collect();
         assert_eq!(
             i,
             vec![Instruction::Delete(String::from("1"), Msg::UserCancelled)]
@@ -422,7 +422,7 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 100);
         let order = TestOrder::new("b1", true, 1000, 100);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(
             i,
             vec![
@@ -435,7 +435,7 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 50);
         let order = TestOrder::new("b1", true, 1000, 100);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(
             i,
             vec![
@@ -452,7 +452,7 @@ mod tests {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "s1", false, 1100, 100);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100)));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100))).collect();
         assert!(matches!(i.as_slice(), [Instruction::Insert(_, _)]));
 
         // Buy at higher price matches lower sell
@@ -460,7 +460,7 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 100);
         let mut eval = Evaluator::default();
         let order = TestOrder::new("b1", true, 1100, 100);
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(
             i,
             vec![
@@ -473,7 +473,7 @@ mod tests {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "b1", true, 1000, 100);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1100, 100)));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1100, 100))).collect();
         assert!(matches!(i.as_slice(), [Instruction::Insert(_, _)]));
 
         // Sell at lower price matches higher buy
@@ -481,7 +481,7 @@ mod tests {
         setup_order(&mut ob, "b1", true, 1100, 100);
         let order = TestOrder::new("s1", false, 1000, 100);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(
             i,
             vec![
@@ -497,7 +497,7 @@ mod tests {
         setup_order(&mut ob, "b1", true, 1100, 30);
         setup_order(&mut ob, "b2", true, 1050, 40);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1000, 100)));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1000, 100))).collect();
         assert!(
             i.iter()
                 .any(|p| matches!(p, Instruction::Insert(_, r) if *r == 30))
@@ -510,14 +510,14 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 50);
         setup_order(&mut ob, "s2", false, 1000, 50);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 50)));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 50))).collect();
         assert!(i.iter().any(|p| matches!(p, Instruction::Fill(..))));
 
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "b1", true, 1000, 50);
         setup_order(&mut ob, "b2", true, 1000, 50);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1000, 50)));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1000, 50))).collect();
         assert!(i.iter().any(|p| matches!(p, Instruction::Fill(..))));
     }
 
@@ -525,9 +525,9 @@ mod tests {
     fn test_eval_with_ops() {
         let ob = OrderBook::<TestOrder>::default();
         let mut eval = Evaluator::default();
-        let i1 = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100)));
-        let i2 = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1100, 50)));
-        let i3 = eval.eval(&ob, Op::Delete(String::from("b1")));
+        let i1: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100))).collect();
+        let i2: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1100, 50))).collect();
+        let i3: Vec<_> = eval.eval(&ob, Op::Delete(String::from("b1"))).collect();
         assert!(matches!(i1.as_slice(), [Instruction::Insert(_, _)]));
         assert!(matches!(i2.as_slice(), [Instruction::Insert(_, _)]));
         assert!(matches!(
@@ -543,10 +543,10 @@ mod tests {
 
         // Across eval calls, temp state is tracked (until reset)
         let mut eval = Evaluator::default();
-        let i1 = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 30)));
-        let i2 = eval.eval(&ob, Op::Insert(TestOrder::new("b2", true, 1000, 20)));
-        let i3 = eval.eval(&ob, Op::Delete(String::from("s1")));
-        let i4 = eval.eval(&ob, Op::Insert(TestOrder::new("b3", true, 1000, 50)));
+        let i1: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 30))).collect();
+        let i2: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b2", true, 1000, 20))).collect();
+        let i3: Vec<_> = eval.eval(&ob, Op::Delete(String::from("s1"))).collect();
+        let i4: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b3", true, 1000, 50))).collect();
         // b1: Match(b1, [(s1, 30)])
         // b2: Match(b2, [(s1, 20)])
         // s1: delete
@@ -678,7 +678,7 @@ mod tests {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "s1", false, 1000, 100);
         let mut eval = Evaluator::default();
-        let instructions = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 60)));
+        let instructions: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 60))).collect();
         let filled: u64 = instructions
             .iter()
             .filter_map(|p| match p {
@@ -699,8 +699,7 @@ mod tests {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "s1", false, 1000, 50);
         let mut eval = Evaluator::default();
-        let instructions = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100)));
-        for instr in instructions {
+        for instr in eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100))) {
             ob.apply(instr);
         }
         assert!(ob.asks.is_empty());
@@ -717,7 +716,7 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 100);
         let order = TestOrder::new("b1", true, 1000, 100).with_tif(TIF::FOK);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(
             i,
             vec![
@@ -733,7 +732,7 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 50);
         let order = TestOrder::new("b1", true, 1000, 100).with_tif(TIF::FOK);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order)).collect();
         assert_eq!(
             i,
             vec![Instruction::NoOp(String::from("b1"), Msg::FOKNotFilled)]
@@ -746,7 +745,7 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 50);
         let order = TestOrder::new("b1", true, 1000, 100).with_tif(TIF::IOC);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(
             i,
             vec![
@@ -762,7 +761,7 @@ mod tests {
         let ob = OrderBook::<TestOrder>::default();
         let order = TestOrder::new("b1", true, 1000, 100).with_tif(TIF::IOC);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order)).collect();
         assert_eq!(
             i,
             vec![Instruction::NoOp(String::from("b1"), Msg::IOCNoFill)]
@@ -775,7 +774,7 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 50);
         let order = TestOrder::new("b1", true, 1000, 100); // GTC default
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(
             i,
             vec![
@@ -792,7 +791,7 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 100);
         let order = TestOrder::new("b1", true, 1000, 100).with_post_only(true);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order)).collect();
         assert_eq!(
             i,
             vec![Instruction::NoOp(String::from("b1"), Msg::PostOnlyFilled)]
@@ -805,7 +804,7 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1100, 100);
         let order = TestOrder::new("b1", true, 1000, 100).with_post_only(true);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(i, vec![Instruction::Insert(order, 100)]);
     }
 
@@ -821,7 +820,7 @@ mod tests {
             .with_owner("alice")
             .with_stp(STP::CancelTaker);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order)).collect();
         assert_eq!(
             i,
             vec![Instruction::NoOp(String::from("b1"), Msg::StpCancelTaker)]
@@ -836,7 +835,7 @@ mod tests {
             .with_owner("bob")
             .with_stp(STP::CancelTaker);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         assert_eq!(
             i,
             vec![
@@ -854,7 +853,7 @@ mod tests {
             .with_owner("alice")
             .with_stp(STP::CancelMaker);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         let insert_b1 = i
             .iter()
             .any(|p| matches!(p, Instruction::Insert(o, r) if o.id() == "b1" && *r == 100));
@@ -883,7 +882,7 @@ mod tests {
             .with_owner("alice")
             .with_stp(STP::CancelMaker);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order.clone()));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order.clone())).collect();
         let fills: Vec<_> = i
             .iter()
             .filter_map(|p| match p {
@@ -914,7 +913,7 @@ mod tests {
             .with_owner("alice")
             .with_stp(STP::CancelBoth);
         let mut eval = Evaluator::default();
-        let i = eval.eval(&ob, Op::Insert(order));
+        let i: Vec<_> = eval.eval(&ob, Op::Insert(order)).collect();
         assert_eq!(
             i,
             vec![
