@@ -30,15 +30,15 @@ impl<O: OrderInterface> Default for OrderBook<O> {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Output<O: OrderInterface> {
     // Resting quantity
-    Inserted(O::N),
+    Inserted(O::I, O::N),
     // Deleted
-    Deleted,
+    Deleted(O::I),
     // Partial fill
-    Partial,
+    Partial(O::I),
     // Filled
-    Filled,
+    Filled(O::I),
     // No operation
-    NoOp,
+    NoOp(O::I),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,7 +148,7 @@ impl<O: OrderInterface> OrderBook<O> {
         match instruction {
             Instruction::Fill(order_id, _, _price, quantity, is_taker) => {
                 if is_taker {
-                    return Output::Filled;
+                    return Output::Filled(order_id);
                 }
                 let &node_ptr = orders.get(&order_id).unwrap();
                 let is_buy = unsafe { (*node_ptr).data.is_buy() };
@@ -156,9 +156,9 @@ impl<O: OrderInterface> OrderBook<O> {
                 let removed = side.fill_order(node_ptr, quantity, pool);
                 if removed {
                     orders.remove(&order_id);
-                    Output::Filled
+                    Output::Filled(order_id)
                 } else {
-                    Output::Partial
+                    Output::Partial(order_id)
                 }
             }
             Instruction::Insert(mut order, remaining) => {
@@ -171,9 +171,12 @@ impl<O: OrderInterface> OrderBook<O> {
                     let is_buy = order.is_buy();
                     let side = if is_buy { bids } else { asks };
                     let node_ptr = side.insert_order(order, pool);
-                    orders.insert(id, node_ptr);
+                    orders.insert(id.clone(), node_ptr);
+
+                    Output::Inserted(id, remaining)
+                } else {
+                    panic!("remaining is zero");
                 }
-                Output::Inserted(remaining)
             }
             Instruction::Delete(order_id, _msg) => {
                 if let Some(&node_ptr) = orders.get(&order_id) {
@@ -182,9 +185,9 @@ impl<O: OrderInterface> OrderBook<O> {
                     side.remove_order(node_ptr, pool);
                     orders.remove(&order_id);
                 }
-                Output::Deleted
+                Output::Deleted(order_id)
             }
-            Instruction::NoOp(_, _) => Output::NoOp,
+            Instruction::NoOp(order_id, _) => Output::NoOp(order_id),
         }
     }
 }
@@ -387,7 +390,9 @@ mod tests {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", true, 1000, 100);
         let mut eval = Evaluator::default();
-        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("1", true, 1000, 50))).collect();
+        let i: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("1", true, 1000, 50)))
+            .collect();
         assert_eq!(
             i,
             vec![Instruction::NoOp(
@@ -452,7 +457,9 @@ mod tests {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "s1", false, 1100, 100);
         let mut eval = Evaluator::default();
-        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100))).collect();
+        let i: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100)))
+            .collect();
         assert!(matches!(i.as_slice(), [Instruction::Insert(_, _)]));
 
         // Buy at higher price matches lower sell
@@ -473,7 +480,9 @@ mod tests {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "b1", true, 1000, 100);
         let mut eval = Evaluator::default();
-        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1100, 100))).collect();
+        let i: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("s1", false, 1100, 100)))
+            .collect();
         assert!(matches!(i.as_slice(), [Instruction::Insert(_, _)]));
 
         // Sell at lower price matches higher buy
@@ -497,7 +506,9 @@ mod tests {
         setup_order(&mut ob, "b1", true, 1100, 30);
         setup_order(&mut ob, "b2", true, 1050, 40);
         let mut eval = Evaluator::default();
-        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1000, 100))).collect();
+        let i: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("s1", false, 1000, 100)))
+            .collect();
         assert!(
             i.iter()
                 .any(|p| matches!(p, Instruction::Insert(_, r) if *r == 30))
@@ -510,14 +521,18 @@ mod tests {
         setup_order(&mut ob, "s1", false, 1000, 50);
         setup_order(&mut ob, "s2", false, 1000, 50);
         let mut eval = Evaluator::default();
-        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 50))).collect();
+        let i: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 50)))
+            .collect();
         assert!(i.iter().any(|p| matches!(p, Instruction::Fill(..))));
 
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "b1", true, 1000, 50);
         setup_order(&mut ob, "b2", true, 1000, 50);
         let mut eval = Evaluator::default();
-        let i: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1000, 50))).collect();
+        let i: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("s1", false, 1000, 50)))
+            .collect();
         assert!(i.iter().any(|p| matches!(p, Instruction::Fill(..))));
     }
 
@@ -525,8 +540,12 @@ mod tests {
     fn test_eval_with_ops() {
         let ob = OrderBook::<TestOrder>::default();
         let mut eval = Evaluator::default();
-        let i1: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100))).collect();
-        let i2: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("s1", false, 1100, 50))).collect();
+        let i1: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100)))
+            .collect();
+        let i2: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("s1", false, 1100, 50)))
+            .collect();
         let i3: Vec<_> = eval.eval(&ob, Op::Delete(String::from("b1"))).collect();
         assert!(matches!(i1.as_slice(), [Instruction::Insert(_, _)]));
         assert!(matches!(i2.as_slice(), [Instruction::Insert(_, _)]));
@@ -543,10 +562,16 @@ mod tests {
 
         // Across eval calls, temp state is tracked (until reset)
         let mut eval = Evaluator::default();
-        let i1: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 30))).collect();
-        let i2: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b2", true, 1000, 20))).collect();
+        let i1: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 30)))
+            .collect();
+        let i2: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("b2", true, 1000, 20)))
+            .collect();
         let i3: Vec<_> = eval.eval(&ob, Op::Delete(String::from("s1"))).collect();
-        let i4: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b3", true, 1000, 50))).collect();
+        let i4: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("b3", true, 1000, 50)))
+            .collect();
         // b1: Match(b1, [(s1, 30)])
         // b2: Match(b2, [(s1, 20)])
         // s1: delete
@@ -619,10 +644,9 @@ mod tests {
         // Complete fill sell
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", false, 1000, 100);
-        let t1 = TestOrder::new("t1", true, 1000, 100);
         for instr in vec![
+            Instruction::Fill(String::from("t1"), String::from("t1"), 1000, 100, true),
             Instruction::Fill(String::from("1"), String::from("1"), 1000, 100, false),
-            Instruction::Insert(t1, 0),
         ] {
             ob.apply(instr);
         }
@@ -643,19 +667,13 @@ mod tests {
         // Complete fill buy
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "1", true, 1000, 100);
-        let t1 = TestOrder::new("t1", false, 1000, 100);
         for instr in vec![
+            Instruction::Fill(String::from("t1"), String::from("t1"), 1000, 100, true),
             Instruction::Fill(String::from("1"), String::from("1"), 1000, 100, false),
-            Instruction::Insert(t1, 0),
         ] {
             ob.apply(instr);
         }
         assert!(ob.bids.is_empty());
-
-        // Empty maker list (no panic)
-        let mut ob = OrderBook::<TestOrder>::default();
-        let x = TestOrder::new("x", true, 1000, 100);
-        ob.apply(Instruction::Insert(x, 0));
     }
 
     #[test]
@@ -678,7 +696,9 @@ mod tests {
         let mut ob = OrderBook::<TestOrder>::default();
         setup_order(&mut ob, "s1", false, 1000, 100);
         let mut eval = Evaluator::default();
-        let instructions: Vec<_> = eval.eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 60))).collect();
+        let instructions: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 60)))
+            .collect();
         let filled: u64 = instructions
             .iter()
             .filter_map(|p| match p {
@@ -869,8 +889,8 @@ mod tests {
         let mut ob2 = OrderBook::<TestOrder>::default();
         setup_order_with_owner(&mut ob2, "s1", false, 1000, 100, "alice");
         let outputs: Vec<_> = i.into_iter().map(|instr| ob2.apply(instr)).collect();
-        assert!(outputs.contains(&Output::Inserted(100)));
-        assert!(outputs.contains(&Output::Deleted));
+        assert!(outputs.contains(&Output::Inserted(String::from("b1"), 100)));
+        assert!(outputs.contains(&Output::Deleted(String::from("s1"))));
     }
 
     #[test]
@@ -927,12 +947,15 @@ mod tests {
         assert_eq!(
             outputs
                 .iter()
-                .filter(|p| matches!(p, Output::Deleted))
+                .filter(|p| matches!(p, Output::Deleted(id) if id == "s1"))
                 .count(),
             1
         );
         assert_eq!(
-            outputs.iter().filter(|p| matches!(p, Output::NoOp)).count(),
+            outputs
+                .iter()
+                .filter(|p| matches!(p, Output::NoOp(id) if id == "b1"))
+                .count(),
             1
         );
         assert!(ob2.is_empty());

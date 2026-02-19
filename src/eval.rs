@@ -90,11 +90,7 @@ impl<O: OrderInterface> Evaluator<O> {
     /// Does not mutate `ob`. The returned `Drain` yields owned `Instruction` values
     /// while preserving the internal buffer for reuse.
     #[inline]
-    pub fn eval(
-        &mut self,
-        ob: &OrderBook<O>,
-        op: Op<O>,
-    ) -> std::vec::Drain<'_, Instruction<O>> {
+    pub fn eval(&mut self, ob: &OrderBook<O>, op: Op<O>) -> std::vec::Drain<'_, Instruction<O>> {
         match op {
             Op::Insert(order) => self.eval_insert(ob, order),
             Op::Delete(order_id) => self.eval_cancel(ob, order_id),
@@ -164,10 +160,7 @@ impl<O: OrderInterface> Evaluator<O> {
                     match stp {
                         STP::None => {}
                         STP::CancelTaker => {
-                            out.push(Instruction::NoOp(
-                                order.id().clone(),
-                                Msg::StpCancelTaker,
-                            ));
+                            out.push(Instruction::NoOp(order.id().clone(), Msg::StpCancelTaker));
                             return out.drain(..);
                         }
                         STP::CancelMaker => {
@@ -177,14 +170,8 @@ impl<O: OrderInterface> Evaluator<O> {
                         }
                         STP::CancelBoth => {
                             temp.insert(maker.id().clone(), zero);
-                            out.push(Instruction::NoOp(
-                                order.id().clone(),
-                                Msg::StpCancelBoth,
-                            ));
-                            out.push(Instruction::Delete(
-                                maker.id().clone(),
-                                Msg::StpCancelBoth,
-                            ));
+                            out.push(Instruction::NoOp(order.id().clone(), Msg::StpCancelBoth));
+                            out.push(Instruction::Delete(maker.id().clone(), Msg::StpCancelBoth));
                             return out.drain(..);
                         }
                     }
@@ -228,9 +215,11 @@ impl<O: OrderInterface> Evaluator<O> {
                     true,
                 ));
             }
-            out.extend(fills.drain(..).map(|(id, owner, price, qty, _)| {
-                Instruction::Fill(id, owner, price, qty, false)
-            }));
+            out.extend(
+                fills.drain(..).map(|(id, owner, price, qty, _)| {
+                    Instruction::Fill(id, owner, price, qty, false)
+                }),
+            );
             for id in stp_cancels.drain(..) {
                 out.push(Instruction::Delete(id, Msg::StpCancelMaker));
             }
