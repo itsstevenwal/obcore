@@ -1,6 +1,6 @@
 [package]
 name = "obcore"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 authors = ["itsstevenwal"]
 description = "A single threaded, zero dependency price-time priority limit orderbook implementation in Rust."
