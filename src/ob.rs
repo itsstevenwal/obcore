@@ -1,13 +1,18 @@
 #[cfg(feature = "bench")]
 use crate::eval::Msg;
 use crate::eval::{Instruction, InstructionPrimitive};
-use crate::{hash::FxHashMap, list::{Node, Pool}, order::OrderInterface, side::Side};
+use crate::{
+    hash::FxHashMap,
+    list::{Node, Pool},
+    order::OrderInterface,
+    side::Side,
+};
 
 /// A complete orderbook with bid and ask sides.
 pub struct OrderBook<O: OrderInterface> {
     pub(crate) bids: Side<O>,
     pub(crate) asks: Side<O>,
-    pub(crate) orders: FxHashMap<O::T, *mut Node<O>>,
+    pub(crate) orders: FxHashMap<O::I, *mut Node<O>>,
     pub(crate) pool: Pool<O>,
 }
 
@@ -32,6 +37,8 @@ pub enum OutputPrimitive<O: OrderInterface> {
     Partial,
     // Filled
     Filled,
+    // No operation
+    NoOp,
 }
 
 /// Output of a single instruction.
@@ -112,7 +119,7 @@ impl<O: OrderInterface> OrderBook<O> {
 
     /// Returns a reference to the order with the given ID, if it exists.
     #[inline]
-    pub fn order(&self, order_id: &O::T) -> Option<&O> {
+    pub fn order(&self, order_id: &O::I) -> Option<&O> {
         self.orders
             .get(order_id)
             .map(|&ptr| unsafe { &(*ptr).data })
@@ -132,7 +139,7 @@ impl<O: OrderInterface> OrderBook<O> {
     /// Applies a single delete instruction. Only available with the `bench` feature.
     #[cfg(feature = "bench")]
     #[inline(always)]
-    pub fn apply_delete(&mut self, order_id: O::T) -> Output<O> {
+    pub fn apply_delete(&mut self, order_id: O::I) -> Output<O> {
         Output::Single(
             self.apply_single(InstructionPrimitive::Delete(order_id, Msg::UserCancelled)),
         )
@@ -186,12 +193,15 @@ impl<O: OrderInterface> OrderBook<O> {
     fn apply_primitive(
         bids: &mut Side<O>,
         asks: &mut Side<O>,
-        orders: &mut FxHashMap<O::T, *mut Node<O>>,
+        orders: &mut FxHashMap<O::I, *mut Node<O>>,
         pool: &mut Pool<O>,
         p: InstructionPrimitive<O>,
     ) -> OutputPrimitive<O> {
         match p {
-            InstructionPrimitive::Fill(order_id, quantity) => {
+            InstructionPrimitive::Fill(order_id, _, _price, quantity, is_taker) => {
+                if is_taker {
+                    return OutputPrimitive::Filled;
+                }
                 let &node_ptr = orders.get(&order_id).unwrap();
                 let is_buy = unsafe { (*node_ptr).data.is_buy() };
                 let side = if is_buy { bids } else { asks };
@@ -226,6 +236,7 @@ impl<O: OrderInterface> OrderBook<O> {
                 }
                 OutputPrimitive::Deleted
             }
+            InstructionPrimitive::NoOp(_, _) => OutputPrimitive::NoOp,
         }
     }
 }
@@ -437,7 +448,7 @@ mod tests {
         let i = eval.eval(&ob, vec![Op::Insert(TestOrder::new("1", true, 1000, 50))]);
         assert_eq!(
             i[0],
-            Instruction::Single(InstructionPrimitive::Delete(
+            Instruction::Single(InstructionPrimitive::NoOp(
                 String::from("1"),
                 Msg::OrderAlreadyExists,
             ))
@@ -451,7 +462,7 @@ mod tests {
         let i = eval.eval(&ob, vec![Op::Delete(String::from("x"))]);
         assert_eq!(
             i[0],
-            Instruction::Single(InstructionPrimitive::Delete(
+            Instruction::Single(InstructionPrimitive::NoOp(
                 String::from("x"),
                 Msg::OrderNotFound,
             ))
@@ -480,7 +491,10 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Multi(vec![InstructionPrimitive::Fill(String::from("s1"), 100,)])
+            Instruction::Multi(vec![
+                InstructionPrimitive::Fill(String::from("b1"), String::from("b1"), 1000, 100, true),
+                InstructionPrimitive::Fill(String::from("s1"), String::from("s1"), 1000, 100, false),
+            ])
         );
 
         let mut ob = OrderBook::<TestOrder>::default();
@@ -493,7 +507,8 @@ mod tests {
         assert_eq!(
             i[0],
             Instruction::Multi(vec![
-                InstructionPrimitive::Fill(String::from("s1"), 50),
+                InstructionPrimitive::Fill(String::from("b1"), String::from("b1"), 1000, 50, true),
+                InstructionPrimitive::Fill(String::from("s1"), String::from("s1"), 1000, 50, false),
                 InstructionPrimitive::Insert(order, 50),
             ])
         );
@@ -521,7 +536,10 @@ mod tests {
         let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
         assert_eq!(
             i[0],
-            Instruction::Multi(vec![InstructionPrimitive::Fill(String::from("s1"), 100,)])
+            Instruction::Multi(vec![
+                InstructionPrimitive::Fill(String::from("b1"), String::from("b1"), 1000, 100, true),
+                InstructionPrimitive::Fill(String::from("s1"), String::from("s1"), 1000, 100, false),
+            ])
         );
 
         // Sell doesn't match lower buy
@@ -547,7 +565,10 @@ mod tests {
         let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
         assert_eq!(
             i[0],
-            Instruction::Multi(vec![InstructionPrimitive::Fill(String::from("b1"), 100,)])
+            Instruction::Multi(vec![
+                InstructionPrimitive::Fill(String::from("s1"), String::from("s1"), 1100, 100, true),
+                InstructionPrimitive::Fill(String::from("b1"), String::from("b1"), 1100, 100, false),
+            ])
         );
     }
 
@@ -623,7 +644,7 @@ mod tests {
         let matches: Vec<_> = i
             .iter()
             .filter(|instr| {
-                matches!(instr, Instruction::Multi(v) if v.iter().any(|p| matches!(p, InstructionPrimitive::Fill(_, _))))
+                matches!(instr, Instruction::Multi(v) if v.iter().any(|p| matches!(p, InstructionPrimitive::Fill(..))))
             })
             .collect();
         assert_eq!(matches.len(), 2); // b1 and b2 matched
@@ -690,7 +711,7 @@ mod tests {
         setup_order(&mut ob, "1", false, 1000, 100);
         let t1 = TestOrder::new("t1", true, 1000, 100);
         ob.apply(vec![Instruction::Multi(vec![
-            InstructionPrimitive::Fill(String::from("1"), 30),
+            InstructionPrimitive::Fill(String::from("1"), String::from("1"), 1000, 30, false),
             InstructionPrimitive::Insert(t1, 70),
         ])]);
         assert_eq!(ob.order(&String::from("1")).unwrap().remaining(), 70);
@@ -700,7 +721,7 @@ mod tests {
         setup_order(&mut ob, "1", false, 1000, 100);
         let t1 = TestOrder::new("t1", true, 1000, 100);
         ob.apply(vec![Instruction::Multi(vec![
-            InstructionPrimitive::Fill(String::from("1"), 100),
+            InstructionPrimitive::Fill(String::from("1"), String::from("1"), 1000, 100, false),
             InstructionPrimitive::Insert(t1, 0),
         ])]);
         assert!(ob.asks.is_empty());
@@ -710,7 +731,7 @@ mod tests {
         setup_order(&mut ob, "1", true, 1000, 100);
         let t1 = TestOrder::new("t1", false, 1000, 100);
         ob.apply(vec![Instruction::Multi(vec![
-            InstructionPrimitive::Fill(String::from("1"), 30),
+            InstructionPrimitive::Fill(String::from("1"), String::from("1"), 1000, 30, false),
             InstructionPrimitive::Insert(t1, 70),
         ])]);
         assert_eq!(ob.order(&String::from("1")).unwrap().remaining(), 70);
@@ -720,7 +741,7 @@ mod tests {
         setup_order(&mut ob, "1", true, 1000, 100);
         let t1 = TestOrder::new("t1", false, 1000, 100);
         ob.apply(vec![Instruction::Multi(vec![
-            InstructionPrimitive::Fill(String::from("1"), 100),
+            InstructionPrimitive::Fill(String::from("1"), String::from("1"), 1000, 100, false),
             InstructionPrimitive::Insert(t1, 0),
         ])]);
         assert!(ob.bids.is_empty());
@@ -763,7 +784,7 @@ mod tests {
         // Check there's a Match for b1 with total matched 60
         let taker_match = instructions.iter().find(|i| {
             matches!(i, Instruction::Multi(v) if {
-                let filled: u64 = v.iter().filter_map(|p| match p { InstructionPrimitive::Fill(_, q) => Some(*q), _ => None }).sum();
+                let filled: u64 = v.iter().filter_map(|p| match p { InstructionPrimitive::Fill(_, _, _, q, false) => Some(*q), _ => None }).sum();
                 filled == 60
             })
         });
@@ -800,7 +821,10 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Multi(vec![InstructionPrimitive::Fill(String::from("s1"), 100,)])
+            Instruction::Multi(vec![
+                InstructionPrimitive::Fill(String::from("b1"), String::from("b1"), 1000, 100, true),
+                InstructionPrimitive::Fill(String::from("s1"), String::from("s1"), 1000, 100, false),
+            ])
         );
     }
 
@@ -814,7 +838,7 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Single(InstructionPrimitive::Delete(
+            Instruction::Single(InstructionPrimitive::NoOp(
                 String::from("b1"),
                 Msg::FOKNotFilled,
             ))
@@ -828,11 +852,15 @@ mod tests {
         let order = TestOrder::new("b1", true, 1000, 100).with_tif(TIF::IOC);
         let mut eval = Evaluator::default();
         let i = eval.eval(&ob, vec![Op::Insert(order.clone())]);
-        // IOC: Match 50, remaining set to 0 so apply does not insert
+        // IOC: Match 50, remainder cancelled
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Multi(vec![InstructionPrimitive::Fill(String::from("s1"), 50,)])
+            Instruction::Multi(vec![
+                InstructionPrimitive::Fill(String::from("b1"), String::from("b1"), 1000, 50, true),
+                InstructionPrimitive::Fill(String::from("s1"), String::from("s1"), 1000, 50, false),
+                InstructionPrimitive::Delete(String::from("b1"), Msg::IOCNoFill),
+            ])
         );
     }
 
@@ -846,7 +874,7 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Single(InstructionPrimitive::Delete(
+            Instruction::Single(InstructionPrimitive::NoOp(
                 String::from("b1"),
                 Msg::IOCNoFill,
             ))
@@ -864,7 +892,8 @@ mod tests {
         assert_eq!(
             i[0],
             Instruction::Multi(vec![
-                InstructionPrimitive::Fill(String::from("s1"), 50),
+                InstructionPrimitive::Fill(String::from("b1"), String::from("b1"), 1000, 50, true),
+                InstructionPrimitive::Fill(String::from("s1"), String::from("s1"), 1000, 50, false),
                 InstructionPrimitive::Insert(order, 50),
             ])
         );
@@ -880,7 +909,7 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Single(InstructionPrimitive::Delete(
+            Instruction::Single(InstructionPrimitive::NoOp(
                 String::from("b1"),
                 Msg::PostOnlyFilled,
             ))
@@ -917,7 +946,7 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Single(InstructionPrimitive::Delete(
+            Instruction::Single(InstructionPrimitive::NoOp(
                 String::from("b1"),
                 Msg::StpCancelTaker,
             ))
@@ -936,7 +965,10 @@ mod tests {
         assert_eq!(i.len(), 1);
         assert_eq!(
             i[0],
-            Instruction::Multi(vec![InstructionPrimitive::Fill(String::from("s1"), 100,)])
+            Instruction::Multi(vec![
+                InstructionPrimitive::Fill(String::from("b1"), String::from("bob"), 1000, 100, true),
+                InstructionPrimitive::Fill(String::from("s1"), String::from("alice"), 1000, 100, false),
+            ])
         );
     }
 
@@ -986,7 +1018,7 @@ mod tests {
         assert!(matches!(
             &i[0],
             Instruction::Multi(v) if {
-                let fills: Vec<_> = v.iter().filter_map(|p| match p { InstructionPrimitive::Fill(id, q) => Some((id.clone(), *q)), _ => None }).collect();
+                let fills: Vec<_> = v.iter().filter_map(|p| match p { InstructionPrimitive::Fill(id, _, _, q, false) => Some((id.clone(), *q)), _ => None }).collect();
                 let cancel_ids: Vec<_> = v.iter().filter_map(|p| match p { InstructionPrimitive::Delete(id, _) => Some(id.clone()), _ => None }).collect();
                 v.iter().any(|p| matches!(p, InstructionPrimitive::Insert(o, r) if o.id() == "b1" && *r == 50))
                     && fills == &[(String::from("s2"), 50)]
@@ -1008,7 +1040,7 @@ mod tests {
         assert_eq!(
             i[0],
             Instruction::Multi(vec![
-                InstructionPrimitive::Delete(String::from("b1"), Msg::StpCancelBoth),
+                InstructionPrimitive::NoOp(String::from("b1"), Msg::StpCancelBoth),
                 InstructionPrimitive::Delete(String::from("s1"), Msg::StpCancelBoth),
             ])
         );
@@ -1022,10 +1054,16 @@ mod tests {
                     v.iter()
                         .filter(|p| matches!(p, OutputPrimitive::Deleted))
                         .count(),
-                    2
+                    1
+                );
+                assert_eq!(
+                    v.iter()
+                        .filter(|p| matches!(p, OutputPrimitive::NoOp))
+                        .count(),
+                    1
                 );
             }
-            _ => panic!("expected Multi output with two Deleted"),
+            _ => panic!("expected Multi output with NoOp and Deleted"),
         }
         assert!(ob2.is_empty());
     }

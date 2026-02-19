@@ -25,9 +25,9 @@ impl BenchOrder {
 }
 
 impl OrderInterface for BenchOrder {
-    type T = u64;
+    type I = u64;
     type N = u64;
-    type Owner = u64;
+    type O = u64;
 
     fn id(&self) -> &u64 {
         &self.id
@@ -378,7 +378,7 @@ fn bench_apply_match(c: &mut Criterion) {
             },
             |ob| {
                 black_box(ob.apply(vec![Instruction::Multi(vec![
-                    InstructionPrimitive::Fill(0, 100),
+                    InstructionPrimitive::Fill(0, 0, 1000, 100, false),
                 ])]))
             },
             BatchSize::LargeInput,
@@ -399,7 +399,7 @@ fn bench_apply_match(c: &mut Criterion) {
             },
             |ob| {
                 let fills: Vec<_> = (0..5)
-                    .map(|i| InstructionPrimitive::Fill(i, 10))
+                    .map(|i| InstructionPrimitive::Fill(i, i, 1000 + i, 10, false))
                     .collect();
                 black_box(ob.apply(vec![Instruction::Multi(fills)]))
             },
@@ -421,7 +421,7 @@ fn bench_apply_match(c: &mut Criterion) {
             },
             |ob| {
                 let fills: Vec<_> = (0..10)
-                    .map(|i| InstructionPrimitive::Fill(i, 10))
+                    .map(|i| InstructionPrimitive::Fill(i, i, 1000 + i, 10, false))
                     .collect();
                 black_box(ob.apply(vec![Instruction::Multi(fills)]))
             },

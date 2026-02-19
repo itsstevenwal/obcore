@@ -33,7 +33,7 @@ pub enum STP {
 /// Trait defining the interface for orders in the orderbook.
 /// T: Order identifier type (must be unique). N: Numeric type.
 pub trait OrderInterface {
-    type T: Eq + Display + Default + Hash + Clone + Debug;
+    type I: Eq + Display + Default + Hash + Clone + Debug;
     type N: Ord
         + Eq
         + Copy
@@ -51,9 +51,9 @@ pub trait OrderInterface {
         + DivAssign;
 
     /// Owner/trader id for self-trade detection.
-    type Owner: Eq + Clone;
+    type O: Eq + Display + Default + Hash + Clone + Debug;
 
-    fn id(&self) -> &Self::T;
+    fn id(&self) -> &Self::I;
     fn is_buy(&self) -> bool;
     fn price(&self) -> Self::N;
 
@@ -67,7 +67,7 @@ pub trait OrderInterface {
     fn fill(&mut self, quantity: Self::N);
 
     /// Owner id for self-trade protection.
-    fn owner(&self) -> &Self::Owner;
+    fn owner(&self) -> &Self::O;
 
     /// Time in force: FOK, IOC, or GTC. Default is GTC.
     fn tif(&self) -> TIF {
@@ -137,9 +137,9 @@ impl TestOrder {
 
 #[cfg(test)]
 impl OrderInterface for TestOrder {
-    type T = String;
+    type I = String;
     type N = u64;
-    type Owner = String;
+    type O = String;
 
     fn id(&self) -> &String {
         &self.id

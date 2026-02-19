@@ -15,7 +15,7 @@ use crate::{
 /// An operation to apply to the orderbook.
 pub enum Op<O: OrderInterface> {
     Insert(O),
-    Delete(O::T),
+    Delete(O::I),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -33,6 +33,8 @@ pub enum Msg {
     FOKNotFilled,
     /// IOC order had no match (nothing to do).
     IOCNoFill,
+    /// IOC order had leftover quantity (remaining > 0).
+    IOCLeftover,
     /// STP CancelTaker: incoming order would match same-owner maker(s), taker cancelled.
     StpCancelTaker,
     /// STP CancelBoth: incoming order would match same-owner maker(s), both taker and maker(s) cancelled.
@@ -46,9 +48,11 @@ pub enum InstructionPrimitive<O: OrderInterface> {
     /// (Order, Remaining Quantity)
     Insert(O, O::N),
     /// (Order ID, Reason)
-    Delete(O::T, Msg),
-    /// (Order ID, Quantity)
-    Fill(O::T, O::N),
+    Delete(O::I, Msg),
+    /// (Order ID, Owner ID, Price, Quantity, IsTaker)
+    Fill(O::I, O::O, O::N, O::N, bool),
+    /// (Reason)
+    NoOp(O::I, Msg),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -63,10 +67,10 @@ pub enum Instruction<O: OrderInterface> {
 /// `temp` tracks virtual remaining qty so later ops see earlier effects. `fills` and
 /// `stp_cancels` are kept as struct fields to avoid per-call heap allocation.
 pub struct Evaluator<O: OrderInterface> {
-    temp: FxHashMap<O::T, O::N>,
-    // (maker_id, fill_qty, maker_avail_before_fill) — avail cached to skip re-hashing in temp update
-    fills: Vec<(O::T, O::N, O::N)>,
-    stp_cancels: Vec<O::T>,
+    temp: FxHashMap<O::I, O::N>,
+    // (maker_id, maker_owner, maker_price, fill_qty, maker_avail) — avail cached to skip re-hashing in temp update
+    fills: Vec<(O::I, O::O, O::N, O::N, O::N)>,
+    stp_cancels: Vec<O::I>,
 }
 
 impl<O: OrderInterface> Default for Evaluator<O> {
@@ -104,7 +108,7 @@ impl<O: OrderInterface> Evaluator<O> {
     #[inline(always)]
     pub fn eval_insert(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
         if ob.orders.contains_key(order.id()) {
-            return Instruction::Single(InstructionPrimitive::Delete(
+            return Instruction::Single(InstructionPrimitive::NoOp(
                 order.id().clone(),
                 Msg::OrderAlreadyExists,
             ));
@@ -120,6 +124,8 @@ impl<O: OrderInterface> Evaluator<O> {
 
         let zero = O::N::default();
         let mut remaining = order.remaining();
+        let mut total_filled = zero;
+        let mut weighted_price = zero;
 
         let Evaluator {
             temp,
@@ -133,6 +139,7 @@ impl<O: OrderInterface> Evaluator<O> {
             if (is_buy && price < level.price()) || (!is_buy && price > level.price()) {
                 break;
             }
+            let level_price = level.price();
             for maker in level.iter() {
                 if remaining == zero {
                     break 'outer;
@@ -144,7 +151,7 @@ impl<O: OrderInterface> Evaluator<O> {
                 let fill_qty = remaining.min(maker_avail);
 
                 if post_only {
-                    return Instruction::Single(InstructionPrimitive::Delete(
+                    return Instruction::Single(InstructionPrimitive::NoOp(
                         order.id().clone(),
                         Msg::PostOnlyFilled,
                     ));
@@ -154,7 +161,7 @@ impl<O: OrderInterface> Evaluator<O> {
                     match stp {
                         STP::None => {}
                         STP::CancelTaker => {
-                            return Instruction::Single(InstructionPrimitive::Delete(
+                            return Instruction::Single(InstructionPrimitive::NoOp(
                                 order.id().clone(),
                                 Msg::StpCancelTaker,
                             ));
@@ -167,10 +174,7 @@ impl<O: OrderInterface> Evaluator<O> {
                         STP::CancelBoth => {
                             temp.insert(maker.id().clone(), zero);
                             return Instruction::Multi(vec![
-                                InstructionPrimitive::Delete(
-                                    order.id().clone(),
-                                    Msg::StpCancelBoth,
-                                ),
+                                InstructionPrimitive::NoOp(order.id().clone(), Msg::StpCancelBoth),
                                 InstructionPrimitive::Delete(
                                     maker.id().clone(),
                                     Msg::StpCancelBoth,
@@ -181,45 +185,66 @@ impl<O: OrderInterface> Evaluator<O> {
                 }
 
                 remaining -= fill_qty;
-                fills.push((maker.id().clone(), fill_qty, maker_avail));
+                total_filled += fill_qty;
+                weighted_price += level_price * fill_qty;
+                fills.push((
+                    maker.id().clone(),
+                    maker.owner().clone(),
+                    level_price,
+                    fill_qty,
+                    maker_avail,
+                ));
             }
         }
 
         if tif == TIF::FOK && remaining > zero {
-            return Instruction::Single(InstructionPrimitive::Delete(
+            return Instruction::Single(InstructionPrimitive::NoOp(
                 order.id().clone(),
                 Msg::FOKNotFilled,
             ));
         }
 
         // Record fills in temp so later ops in this batch see reduced maker qty.
-        // maker_avail was cached in fills to avoid re-hashing temp here.
-        for &(ref id, qty, avail) in fills.iter() {
+        for &(ref id, _, _, qty, avail) in fills.iter() {
             temp.insert(id.clone(), avail - qty);
         }
 
         let has_activity = !fills.is_empty() || !stp_cancels.is_empty();
-        let rest = if tif == TIF::IOC { zero } else { remaining };
 
         if has_activity {
-            let cap = fills.len() + stp_cancels.len() + usize::from(rest > zero);
+            let taker_id = order.id().clone();
+            let taker_owner = order.owner().clone();
+
+            let cap = fills.len() + stp_cancels.len() + 2;
             let mut out = Vec::with_capacity(cap);
-            out.extend(
-                fills
-                    .drain(..)
-                    .map(|(id, qty, _)| InstructionPrimitive::Fill(id, qty)),
-            );
+            if total_filled > zero {
+                let avg_price = weighted_price / total_filled;
+                out.push(InstructionPrimitive::Fill(
+                    taker_id.clone(),
+                    taker_owner,
+                    avg_price,
+                    total_filled,
+                    true,
+                ));
+            }
+            out.extend(fills.drain(..).map(|(id, owner, price, qty, _)| {
+                InstructionPrimitive::Fill(id, owner, price, qty, false)
+            }));
             for id in stp_cancels.drain(..) {
                 out.push(InstructionPrimitive::Delete(id, Msg::StpCancelMaker));
             }
-            if rest > zero {
-                out.push(InstructionPrimitive::Insert(order, rest));
+            if tif == TIF::IOC {
+                if remaining > zero {
+                    out.push(InstructionPrimitive::Delete(taker_id, Msg::IOCLeftover));
+                }
+            } else if remaining > zero {
+                out.push(InstructionPrimitive::Insert(order, remaining));
             }
             return Instruction::Multi(out);
         }
 
         if tif == TIF::IOC {
-            return Instruction::Single(InstructionPrimitive::Delete(
+            return Instruction::Single(InstructionPrimitive::NoOp(
                 order.id().clone(),
                 Msg::IOCNoFill,
             ));
@@ -230,9 +255,9 @@ impl<O: OrderInterface> Evaluator<O> {
 
     /// Evaluates a single cancel operation.
     #[inline(always)]
-    pub fn eval_cancel(&mut self, ob: &OrderBook<O>, order_id: O::T) -> Instruction<O> {
+    pub fn eval_cancel(&mut self, ob: &OrderBook<O>, order_id: O::I) -> Instruction<O> {
         if !ob.orders.contains_key(&order_id) {
-            return Instruction::Single(InstructionPrimitive::Delete(order_id, Msg::OrderNotFound));
+            return Instruction::Single(InstructionPrimitive::NoOp(order_id, Msg::OrderNotFound));
         }
         self.temp.insert(order_id.clone(), O::N::default()); // later ops in batch treat as gone
         Instruction::Single(InstructionPrimitive::Delete(order_id, Msg::UserCancelled))

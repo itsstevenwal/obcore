@@ -15,15 +15,15 @@ Run with: `cargo bench --features bench`
 
 | Operation | Benchmark   | Eval   | Apply  | Total   |
 |-----------|-------------|--------|--------|---------|
-| Insert    | Empty book  | 8.3 ns  | 39.8 ns | 48 ns (21 M/s)  |
-| Insert    | Depth 100   | 11.3 ns | 29.7 ns | 41 ns (24 M/s)  |
-| Insert    | Depth 1000  | 37.0 ns | 48.3 ns | 85 ns (12 M/s)  |
-| Cancel    | Single      | 5.0 ns  | 15.4 ns | 20 ns (49 M/s)  |
-| Cancel    | Depth 100   | 8.1 ns  | 30.1 ns | 38 ns (26 M/s)  |
-| Cancel    | Depth 1000  | 23.4 ns | 32.8 ns | 56 ns (18 M/s)  |
-| Match     | 1 level     | 20.1 ns | 70.8 ns | 91 ns (11 M/s)  |
-| Match     | 5 levels    | 45.2 ns | 130 ns  | 175 ns (5.7 M/s) |
-| Match     | 10 levels   | 90.8 ns | 221 ns  | 312 ns (3.2 M/s) |
+| Insert    | Empty book  | 7.6 ns  | 39.7 ns | 47 ns (21 M/s)  |
+| Insert    | Depth 100   | 11.9 ns | 30.1 ns | 42 ns (24 M/s)  |
+| Insert    | Depth 1000  | 25.2 ns | 52.1 ns | 77 ns (13 M/s)  |
+| Cancel    | Single      | 4.9 ns  | 15.3 ns | 20 ns (50 M/s)  |
+| Cancel    | Depth 100   | 7.4 ns  | 26.6 ns | 34 ns (29 M/s)  |
+| Cancel    | Depth 1000  | 22.4 ns | 33.1 ns | 55 ns (18 M/s)  |
+| Match     | 1 level     | 23.8 ns | 71.9 ns | 96 ns (10 M/s)  |
+| Match     | 5 levels    | 50.3 ns | 142 ns  | 192 ns (5.2 M/s) |
+| Match     | 10 levels   | 99.0 ns | 266 ns  | 365 ns (2.7 M/s) |
 
 *Total = Eval + Apply. Throughput in millions of ops/sec.*
 
@@ -44,9 +44,9 @@ struct MyOrder {
 }
 
 impl OrderInterface for MyOrder {
-    type T = u64;   // Order ID type
-    type N = u64;   // Quantity type
-    type Owner = u64;  // For self-trade prevention
+    type I = u64;   // Order ID type
+    type N = u64;   // Numeric type
+    type O = u64;   // Owner type for self-trade prevention
 
     fn id(&self) -> &u64 { &self.id }
     fn price(&self) -> u64 { self.price }
