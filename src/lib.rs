@@ -6,7 +6,7 @@ mod ob;
 mod order;
 mod side;
 
-pub use eval::{Evaluator, Instruction, InstructionPrimitive, Msg, Op};
+pub use eval::{Evaluator, Instruction, Msg, Op};
 pub use level::Level;
 pub use list::{List, Pool};
 pub use ob::*;

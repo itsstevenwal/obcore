@@ -1,10 +1,10 @@
 //! Eval: compute instructions from ops without mutating the book.
 //!
-//! - **Batch**: `eval(ob, [op1, op2, ...])` returns one instruction per op. The book `ob` is read-only.
-//!   Later ops in the same batch "see" earlier effects via `temp`: we track virtual remaining qty
-//!   for orders that were matched or cancelled by earlier ops, so we don't double-fill or match
-//!   against already-cancelled orders.
-//! - **Apply** (in `ob`) takes the instructions and mutates the book; call it after eval.
+//! - **eval**: `eval(ob, op)` returns a vec of instructions for the op. The book `ob` is read-only.
+//!   Across calls between `reset()`s, `temp` tracks virtual remaining qty for orders that were
+//!   matched or cancelled by earlier ops, so we don't double-fill or match against already-cancelled
+//!   orders.
+//! - **Apply** (in `ob`) takes each instruction and mutates the book; call it after eval.
 
 use crate::{
     hash::FxHashMap,
@@ -44,7 +44,7 @@ pub enum Msg {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum InstructionPrimitive<O: OrderInterface> {
+pub enum Instruction<O: OrderInterface> {
     /// (Order, Remaining Quantity)
     Insert(O, O::N),
     /// (Order ID, Reason)
@@ -55,15 +55,9 @@ pub enum InstructionPrimitive<O: OrderInterface> {
     NoOp(O::I, Msg),
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Instruction<O: OrderInterface> {
-    Single(InstructionPrimitive<O>),
-    Multi(Vec<InstructionPrimitive<O>>),
-}
-
 /// Evaluator: turns ops into instructions without mutating the book.
 ///
-/// Reusable — call `reset()` between independent batches. Within a single `eval()` call,
+/// Reusable — call `reset()` between independent batches. Across calls between `reset()`s,
 /// `temp` tracks virtual remaining qty so later ops see earlier effects. `fills` and
 /// `stp_cancels` are kept as struct fields to avoid per-call heap allocation.
 pub struct Evaluator<O: OrderInterface> {
@@ -90,28 +84,24 @@ impl<O: OrderInterface> Evaluator<O> {
         self.temp.clear();
     }
 
-    /// Evaluates a batch of ops; returns one instruction per op. Does not mutate `ob`.
-    /// Uses `temp` so each op sees the effect of previous ops in the batch (e.g. maker qty already taken).
+    /// Evaluates a single op; returns instructions. Does not mutate `ob`.
+    /// Uses `temp` so each op sees the effect of previous ops since the last `reset()`.
     #[inline]
-    pub fn eval(&mut self, ob: &OrderBook<O>, ops: Vec<Op<O>>) -> Vec<Instruction<O>> {
-        let mut instructions = Vec::with_capacity(ops.len());
-        for op in ops {
-            match op {
-                Op::Insert(order) => instructions.push(self.eval_insert(ob, order)),
-                Op::Delete(order_id) => instructions.push(self.eval_cancel(ob, order_id)),
-            }
+    pub fn eval(&mut self, ob: &OrderBook<O>, op: Op<O>) -> Vec<Instruction<O>> {
+        match op {
+            Op::Insert(order) => self.eval_insert(ob, order),
+            Op::Delete(order_id) => self.eval_cancel(ob, order_id),
         }
-        instructions
     }
 
     /// Evaluates a single insert operation.
     #[inline(always)]
-    pub fn eval_insert(&mut self, ob: &OrderBook<O>, order: O) -> Instruction<O> {
+    pub fn eval_insert(&mut self, ob: &OrderBook<O>, order: O) -> Vec<Instruction<O>> {
         if ob.orders.contains_key(order.id()) {
-            return Instruction::Single(InstructionPrimitive::NoOp(
+            return vec![Instruction::NoOp(
                 order.id().clone(),
                 Msg::OrderAlreadyExists,
-            ));
+            )];
         }
 
         let tif = order.tif();
@@ -151,20 +141,17 @@ impl<O: OrderInterface> Evaluator<O> {
                 let fill_qty = remaining.min(maker_avail);
 
                 if post_only {
-                    return Instruction::Single(InstructionPrimitive::NoOp(
-                        order.id().clone(),
-                        Msg::PostOnlyFilled,
-                    ));
+                    return vec![Instruction::NoOp(order.id().clone(), Msg::PostOnlyFilled)];
                 }
 
                 if taker_owner == maker.owner() {
                     match stp {
                         STP::None => {}
                         STP::CancelTaker => {
-                            return Instruction::Single(InstructionPrimitive::NoOp(
+                            return vec![Instruction::NoOp(
                                 order.id().clone(),
                                 Msg::StpCancelTaker,
-                            ));
+                            )];
                         }
                         STP::CancelMaker => {
                             stp_cancels.push(maker.id().clone());
@@ -173,13 +160,10 @@ impl<O: OrderInterface> Evaluator<O> {
                         }
                         STP::CancelBoth => {
                             temp.insert(maker.id().clone(), zero);
-                            return Instruction::Multi(vec![
-                                InstructionPrimitive::NoOp(order.id().clone(), Msg::StpCancelBoth),
-                                InstructionPrimitive::Delete(
-                                    maker.id().clone(),
-                                    Msg::StpCancelBoth,
-                                ),
-                            ]);
+                            return vec![
+                                Instruction::NoOp(order.id().clone(), Msg::StpCancelBoth),
+                                Instruction::Delete(maker.id().clone(), Msg::StpCancelBoth),
+                            ];
                         }
                     }
                 }
@@ -198,13 +182,9 @@ impl<O: OrderInterface> Evaluator<O> {
         }
 
         if tif == TIF::FOK && remaining > zero {
-            return Instruction::Single(InstructionPrimitive::NoOp(
-                order.id().clone(),
-                Msg::FOKNotFilled,
-            ));
+            return vec![Instruction::NoOp(order.id().clone(), Msg::FOKNotFilled)];
         }
 
-        // Record fills in temp so later ops in this batch see reduced maker qty.
         for &(ref id, _, _, qty, avail) in fills.iter() {
             temp.insert(id.clone(), avail - qty);
         }
@@ -219,7 +199,7 @@ impl<O: OrderInterface> Evaluator<O> {
             let mut out = Vec::with_capacity(cap);
             if total_filled > zero {
                 let avg_price = weighted_price / total_filled;
-                out.push(InstructionPrimitive::Fill(
+                out.push(Instruction::Fill(
                     taker_id.clone(),
                     taker_owner,
                     avg_price,
@@ -227,39 +207,38 @@ impl<O: OrderInterface> Evaluator<O> {
                     true,
                 ));
             }
-            out.extend(fills.drain(..).map(|(id, owner, price, qty, _)| {
-                InstructionPrimitive::Fill(id, owner, price, qty, false)
-            }));
+            out.extend(
+                fills.drain(..).map(|(id, owner, price, qty, _)| {
+                    Instruction::Fill(id, owner, price, qty, false)
+                }),
+            );
             for id in stp_cancels.drain(..) {
-                out.push(InstructionPrimitive::Delete(id, Msg::StpCancelMaker));
+                out.push(Instruction::Delete(id, Msg::StpCancelMaker));
             }
             if tif == TIF::IOC {
                 if remaining > zero {
-                    out.push(InstructionPrimitive::Delete(taker_id, Msg::IOCLeftover));
+                    out.push(Instruction::Delete(taker_id, Msg::IOCLeftover));
                 }
             } else if remaining > zero {
-                out.push(InstructionPrimitive::Insert(order, remaining));
+                out.push(Instruction::Insert(order, remaining));
             }
-            return Instruction::Multi(out);
+            return out;
         }
 
         if tif == TIF::IOC {
-            return Instruction::Single(InstructionPrimitive::NoOp(
-                order.id().clone(),
-                Msg::IOCNoFill,
-            ));
+            return vec![Instruction::NoOp(order.id().clone(), Msg::IOCNoFill)];
         }
 
-        Instruction::Single(InstructionPrimitive::Insert(order, remaining))
+        vec![Instruction::Insert(order, remaining)]
     }
 
     /// Evaluates a single cancel operation.
     #[inline(always)]
-    pub fn eval_cancel(&mut self, ob: &OrderBook<O>, order_id: O::I) -> Instruction<O> {
+    pub fn eval_cancel(&mut self, ob: &OrderBook<O>, order_id: O::I) -> Vec<Instruction<O>> {
         if !ob.orders.contains_key(&order_id) {
-            return Instruction::Single(InstructionPrimitive::NoOp(order_id, Msg::OrderNotFound));
+            return vec![Instruction::NoOp(order_id, Msg::OrderNotFound)];
         }
-        self.temp.insert(order_id.clone(), O::N::default()); // later ops in batch treat as gone
-        Instruction::Single(InstructionPrimitive::Delete(order_id, Msg::UserCancelled))
+        self.temp.insert(order_id.clone(), O::N::default());
+        vec![Instruction::Delete(order_id, Msg::UserCancelled)]
     }
 }

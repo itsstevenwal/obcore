@@ -15,15 +15,15 @@ Run with: `cargo bench --features bench`
 
 | Operation | Benchmark   | Eval   | Apply  | Total   |
 |-----------|-------------|--------|--------|---------|
-| Insert    | Empty book  | 7.6 ns  | 39.7 ns | 47 ns (21 M/s)  |
-| Insert    | Depth 100   | 11.9 ns | 30.1 ns | 42 ns (24 M/s)  |
-| Insert    | Depth 1000  | 25.2 ns | 52.1 ns | 77 ns (13 M/s)  |
-| Cancel    | Single      | 4.9 ns  | 15.3 ns | 20 ns (50 M/s)  |
-| Cancel    | Depth 100   | 7.4 ns  | 26.6 ns | 34 ns (29 M/s)  |
-| Cancel    | Depth 1000  | 22.4 ns | 33.1 ns | 55 ns (18 M/s)  |
-| Match     | 1 level     | 23.8 ns | 71.9 ns | 96 ns (10 M/s)  |
-| Match     | 5 levels    | 50.3 ns | 142 ns  | 192 ns (5.2 M/s) |
-| Match     | 10 levels   | 99.0 ns | 266 ns  | 365 ns (2.7 M/s) |
+| Insert    | Empty book  | 11.3 ns | 39.2 ns | 50 ns (20 M/s)  |
+| Insert    | Depth 100   | 15.1 ns | 29.1 ns | 44 ns (23 M/s)  |
+| Insert    | Depth 1000  | 29.7 ns | 39.6 ns | 69 ns (14 M/s)  |
+| Cancel    | Single      | 13.3 ns | 16.9 ns | 30 ns (33 M/s)  |
+| Cancel    | Depth 100   | 15.4 ns | 31.6 ns | 47 ns (21 M/s)  |
+| Cancel    | Depth 1000  | 24.2 ns | 27.3 ns | 51 ns (20 M/s)  |
+| Match     | 1 level     | 22.7 ns | 16.9 ns | 40 ns (25 M/s)  |
+| Match     | 5 levels    | 48.7 ns | 115 ns  | 164 ns (6.1 M/s) |
+| Match     | 10 levels   | 93.7 ns | 241 ns  | 335 ns (3.0 M/s) |
 
 *Total = Eval + Apply. Throughput in millions of ops/sec.*
 
@@ -61,10 +61,12 @@ let mut ob = OrderBook::<MyOrder>::default();
 let mut eval = Evaluator::default();
 
 // Evaluate without mutating the book
-let instructions = eval.eval(&ob, vec![Op::Insert(order)]);
+let instructions = eval.eval(&ob, Op::Insert(order));
 
 // Apply instructions to commit state changes
-ob.apply(instructions);
+for instr in instructions {
+    ob.apply(instr);
+}
 ```
 
 ## license
