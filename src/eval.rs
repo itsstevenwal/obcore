@@ -255,6 +255,11 @@ impl<O: OrderInterface> Evaluator<O> {
                 .push(Instruction::NoOp(order_id, Msg::OrderNotFound));
             return self.out.drain(..);
         }
+        if self.temp.get(&order_id) == Some(&O::N::default()) {
+            self.out
+                .push(Instruction::NoOp(order_id, Msg::OrderNotFound));
+            return self.out.drain(..);
+        }
         self.temp.insert(order_id.clone(), O::N::default());
         self.out
             .push(Instruction::Delete(order_id, Msg::UserCancelled));

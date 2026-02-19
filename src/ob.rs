@@ -960,4 +960,99 @@ mod tests {
         );
         assert!(ob2.is_empty());
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Cancel temp-state edge cases
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_cancel_after_full_fill() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order(&mut ob, "s1", false, 1000, 100);
+
+        let mut eval = Evaluator::default();
+        let i1: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 100)))
+            .collect();
+        assert!(i1.iter().any(|p| matches!(p, Instruction::Fill(id, _, _, q, false) if id == "s1" && *q == 100)));
+
+        let i2: Vec<_> = eval.eval(&ob, Op::Delete(String::from("s1"))).collect();
+        assert_eq!(
+            i2,
+            vec![Instruction::NoOp(String::from("s1"), Msg::OrderNotFound)]
+        );
+    }
+
+    #[test]
+    fn test_double_cancel() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order(&mut ob, "b1", true, 1000, 100);
+
+        let mut eval = Evaluator::default();
+        let i1: Vec<_> = eval.eval(&ob, Op::Delete(String::from("b1"))).collect();
+        assert_eq!(
+            i1,
+            vec![Instruction::Delete(String::from("b1"), Msg::UserCancelled)]
+        );
+
+        let i2: Vec<_> = eval.eval(&ob, Op::Delete(String::from("b1"))).collect();
+        assert_eq!(
+            i2,
+            vec![Instruction::NoOp(String::from("b1"), Msg::OrderNotFound)]
+        );
+    }
+
+    #[test]
+    fn test_cancel_after_partial_fill() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order(&mut ob, "s1", false, 1000, 100);
+
+        let mut eval = Evaluator::default();
+        let i1: Vec<_> = eval
+            .eval(&ob, Op::Insert(TestOrder::new("b1", true, 1000, 40)))
+            .collect();
+        assert!(i1.iter().any(|p| matches!(p, Instruction::Fill(id, _, _, q, false) if id == "s1" && *q == 40)));
+
+        let i2: Vec<_> = eval.eval(&ob, Op::Delete(String::from("s1"))).collect();
+        assert_eq!(
+            i2,
+            vec![Instruction::Delete(String::from("s1"), Msg::UserCancelled)]
+        );
+    }
+
+    #[test]
+    fn test_cancel_after_stp_cancel_maker() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order_with_owner(&mut ob, "s1", false, 1000, 100, "alice");
+
+        let mut eval = Evaluator::default();
+        let order = TestOrder::new("b1", true, 1000, 100)
+            .with_owner("alice")
+            .with_stp(STP::CancelMaker);
+        let _i1: Vec<_> = eval.eval(&ob, Op::Insert(order)).collect();
+
+        let i2: Vec<_> = eval.eval(&ob, Op::Delete(String::from("s1"))).collect();
+        assert_eq!(
+            i2,
+            vec![Instruction::NoOp(String::from("s1"), Msg::OrderNotFound)]
+        );
+    }
+
+    #[test]
+    fn test_cancel_after_stp_cancel_both() {
+        let mut ob = OrderBook::<TestOrder>::default();
+        setup_order_with_owner(&mut ob, "s1", false, 1000, 100, "alice");
+
+        let mut eval = Evaluator::default();
+        let order = TestOrder::new("b1", true, 1000, 100)
+            .with_owner("alice")
+            .with_stp(STP::CancelBoth);
+        let _i1: Vec<_> = eval.eval(&ob, Op::Insert(order)).collect();
+
+        let i2: Vec<_> = eval.eval(&ob, Op::Delete(String::from("s1"))).collect();
+        assert_eq!(
+            i2,
+            vec![Instruction::NoOp(String::from("s1"), Msg::OrderNotFound)]
+        );
+    }
 }
